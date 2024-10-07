@@ -22,7 +22,6 @@ import (
 
 var logger = log.NewModuleLogger(log.Work)
 
-
 type SchedulerStatus uint64
 
 const (
@@ -101,6 +100,10 @@ func (s *Scheduler) Peek() *types.Transaction {
 }
 
 func (s *Scheduler) Start() SchedulerStatus {
+	if !preCheckParallelExecution(s.txs) {
+		return SchedulerStatusFailed
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -112,8 +115,13 @@ func (s *Scheduler) Start() SchedulerStatus {
 		return SchedulerStatusFailed
 	}
 
+	headers := make([]*types.Header, s.concurrencyLevel)
 	for i := 0; i < s.concurrencyLevel; i++ {
-		go s.run(i, header)
+		headers[i] = types.CopyHeader(header)
+	}
+
+	for i := 0; i < s.concurrencyLevel; i++ {
+		go s.run(i, headers[i])
 	}
 
 	go func() {
@@ -168,7 +176,7 @@ func (s *Scheduler) run(i int, header *types.Header) {
 		err, logs := task.CommitTransaction(tx, s.chain, constants.DefaultRewardBase, &vm.Config{
 			Tracer: tracer,
 		})
-		
+
 		s.mu.Lock()
 		s.processedTxs = append(s.processedTxs, tx)
 		s.processedLogs[len(s.processedTxs)-1] = logs
@@ -210,6 +218,32 @@ func (s *Scheduler) prepareHeader() (*types.Header, error) {
 	}
 
 	return header, nil
+}
+
+func preCheckParallelExecution(txs []*types.Transaction) bool {
+	addressSet := make(map[common.Address]byte, len(txs)*3)
+
+	for _, tx := range txs {
+		from, err := tx.From()
+		if err != nil || addressSet[from]&1 != 0 {
+			return false
+		}
+		addressSet[from] |= 1
+
+		feePayer, err := tx.FeePayer()
+		if err != nil || addressSet[feePayer]&2 != 0 {
+			return false
+		}
+		addressSet[feePayer] |= 2
+
+		to := tx.To()
+		if to == nil || addressSet[*to]&4 != 0 {
+			return false
+		}
+		addressSet[*to] |= 4
+	}
+
+	return true
 }
 
 func (s *Scheduler) setTouchedTos(touchedTos []common.Address) {
