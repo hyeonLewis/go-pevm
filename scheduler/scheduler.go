@@ -32,7 +32,7 @@ const (
 	SchedulerStatusReadyToStart SchedulerStatus = iota
 	SchedulerStatusRunning
 	SchedulerStatusFinished
-	SchedulerStatusReverted // need to re-execute sequentially
+	SchedulerStatusReverted
 	SchedulerStatusFailed
 )
 
@@ -53,11 +53,9 @@ type Scheduler struct {
 	processedLogs map[int][]*types.Log
 	touchedTos    map[common.Address]struct{}
 
-	status SchedulerStatus
+	done chan struct{}
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	status SchedulerStatus
 
 	mu sync.RWMutex
 
@@ -68,8 +66,6 @@ func NewScheduler(chain *blockchain.BlockChain, txs []*types.Transaction) *Sched
 	concurrencyLevel := runtime.NumCPU()
 	batchSize := (len(txs) + concurrencyLevel - 1) / concurrencyLevel
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-
 	return &Scheduler{
 		chain:            chain,
 		txs:              txs,
@@ -79,8 +75,6 @@ func NewScheduler(chain *blockchain.BlockChain, txs []*types.Transaction) *Sched
 		processedTxs:     make([]*types.Transaction, 0),
 		processedLogs:    make(map[int][]*types.Log),
 		touchedTos:       make(map[common.Address]struct{}),
-		ctx:              ctx,
-		cancel:           cancel,
 		done:             make(chan struct{}),
 	}
 }
@@ -99,29 +93,40 @@ func (s *Scheduler) Peek() *types.Transaction {
 	return tx
 }
 
-func (s *Scheduler) Start() SchedulerStatus {
+func (s *Scheduler) Start() error {
+	if s.status != SchedulerStatusReadyToStart {
+		return ErrSchedulerNotReady
+	}
+
 	if !preCheckParallelExecution(s.txs) {
-		return SchedulerStatusFailed
+		return ErrNeedSequentialExecution
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	timeoutContext, cancelTimeout := context.WithTimeout(context.Background(), timeout)
+	defer cancelTimeout()
 
 	s.status = SchedulerStatusRunning
 	s.threadWg.Add(s.concurrencyLevel)
 
 	header, err := s.prepareHeader()
 	if err != nil {
-		return SchedulerStatusFailed
+		return ErrPrepareHeader
 	}
 
 	headers := make([]*types.Header, s.concurrencyLevel)
+	states := make([]*state.StateDB, s.concurrencyLevel)
 	for i := 0; i < s.concurrencyLevel; i++ {
 		headers[i] = types.CopyHeader(header)
+		states[i], _ = s.chain.StateAt(header.ParentHash)
 	}
 
+	s.states = states
+
 	for i := 0; i < s.concurrencyLevel; i++ {
-		go s.run(i, headers[i])
+		go s.run(timeoutContext, i, headers[i], states[i])
 	}
 
 	go func() {
@@ -130,49 +135,47 @@ func (s *Scheduler) Start() SchedulerStatus {
 	}()
 
 	select {
-	case <-s.ctx.Done():
-		s.status = SchedulerStatusReverted
+	case <-timeoutContext.Done():
+		s.status = SchedulerStatusFailed
+		return ErrSchedulerTimeout
 	case <-s.done:
-		if s.status == SchedulerStatusRunning {
+		switch s.status {
+		case SchedulerStatusRunning:
 			s.status = SchedulerStatusFinished
+			return nil
+		case SchedulerStatusReverted:
+			return ErrNeedSequentialExecution
+		default:
+			return nil
 		}
 	}
-
-	return s.status
 }
 
-func (s *Scheduler) run(i int, header *types.Header) {
+func (s *Scheduler) run(ctx context.Context, i int, header *types.Header, state *state.StateDB) {
 	defer s.threadWg.Done()
 
 	start := i * s.batchSize
 	end := int(math.Min(float64(start+s.batchSize), float64(len(s.txs))))
 
+	task := chain.NewTask(s.chain.Config(), state, header)
+	
 	for start < end {
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
 
 		if atomic.LoadUint64((*uint64)(&s.status)) == uint64(SchedulerStatusReverted) {
-			break
+			return
 		}
 
 		tx := s.Peek()
 		if tx == nil {
-			break
+			return
 		}
 
-		// TODO: use PrunableStateAt
-		state, _ := s.chain.State()
-		task := chain.NewTask(s.chain.Config(), state, header)
 		tracer := vm.NewCallTracer()
-
-		s.stateMu.Lock()
-		s.states = append(s.states, state)
-		s.tracers = append(s.tracers, tracer)
-		s.stateMu.Unlock()
-
 		err, logs := task.CommitTransaction(tx, s.chain, constants.DefaultRewardBase, &vm.Config{
 			Tracer: tracer,
 		})
@@ -184,19 +187,23 @@ func (s *Scheduler) run(i int, header *types.Header) {
 
 		// TODO: better error handling
 		if err != nil {
+			logger.Warn("Error committing transaction", "err", err, "txHash", tx.Hash())
 			continue
 		}
 
 		result, err := tracer.GetResult()
 		if err != nil {
-			break
+			logger.Warn("Error getting tracer result", "err", err, "txHash", tx.Hash())
+			continue
 		}
 
 		touchedTos := getTouchedTos(result)
 		if s.shouldRevert(touchedTos) {
 			atomic.StoreUint64((*uint64)(&s.status), uint64(SchedulerStatusReverted))
-			break
+			return
 		}
+
+		s.setTouchedTos(touchedTos)
 	}
 }
 
