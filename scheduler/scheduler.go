@@ -39,7 +39,7 @@ const (
 type Scheduler struct {
 	chain *blockchain.BlockChain
 
-	states  []*state.StateDB
+	tasks   []*chain.Task
 	tracers []*vm.CallTracer
 
 	concurrencyLevel int
@@ -47,11 +47,11 @@ type Scheduler struct {
 
 	threadWg sync.WaitGroup
 
-	txs           []*types.Transaction
-	txIndex       int
-	processedTxs  []*types.Transaction
-	processedLogs map[int][]*types.Log
-	touchedTos    map[common.Address]struct{}
+	txs               []*types.Transaction
+	txIndex           int
+	processedTxs      []*types.Transaction
+	processedReceipts map[int]*types.Receipt
+	touchedTos        map[common.Address]struct{}
 
 	done chan struct{}
 
@@ -67,15 +67,15 @@ func NewScheduler(chain *blockchain.BlockChain, txs []*types.Transaction) *Sched
 	batchSize := (len(txs) + concurrencyLevel - 1) / concurrencyLevel
 
 	return &Scheduler{
-		chain:            chain,
-		txs:              txs,
-		concurrencyLevel: concurrencyLevel,
-		batchSize:        batchSize,
-		status:           SchedulerStatusReadyToStart,
-		processedTxs:     make([]*types.Transaction, 0),
-		processedLogs:    make(map[int][]*types.Log),
-		touchedTos:       make(map[common.Address]struct{}),
-		done:             make(chan struct{}),
+		chain:             chain,
+		txs:               txs,
+		concurrencyLevel:  concurrencyLevel,
+		batchSize:         batchSize,
+		status:            SchedulerStatusReadyToStart,
+		processedTxs:      make([]*types.Transaction, 0),
+		processedReceipts: make(map[int]*types.Receipt),
+		touchedTos:        make(map[common.Address]struct{}),
+		done:              make(chan struct{}),
 	}
 }
 
@@ -93,13 +93,13 @@ func (s *Scheduler) Peek() *types.Transaction {
 	return tx
 }
 
-func (s *Scheduler) Start() error {
+func (s *Scheduler) Start() (types.Receipts, []*types.Log, uint64, error) {
 	if s.status != SchedulerStatusReadyToStart {
-		return ErrSchedulerNotReady
+		return nil, nil, 0, ErrSchedulerNotReady
 	}
 
-	if !preCheckParallelExecution(s.txs) {
-		return ErrNeedSequentialExecution
+	if !s.preCheckParallelExecution() {
+		return nil, nil, 0, ErrNeedSequentialExecution
 	}
 
 	s.mu.Lock()
@@ -113,7 +113,7 @@ func (s *Scheduler) Start() error {
 
 	header, err := s.prepareHeader()
 	if err != nil {
-		return ErrPrepareHeader
+		return nil, nil, 0, ErrPrepareHeader
 	}
 
 	headers := make([]*types.Header, s.concurrencyLevel)
@@ -122,8 +122,6 @@ func (s *Scheduler) Start() error {
 		headers[i] = types.CopyHeader(header)
 		states[i], _ = s.chain.StateAt(header.ParentHash)
 	}
-
-	s.states = states
 
 	for i := 0; i < s.concurrencyLevel; i++ {
 		go s.run(timeoutContext, i, headers[i], states[i])
@@ -137,16 +135,18 @@ func (s *Scheduler) Start() error {
 	select {
 	case <-timeoutContext.Done():
 		s.status = SchedulerStatusFailed
-		return ErrSchedulerTimeout
+		return nil, nil, 0, ErrSchedulerTimeout
 	case <-s.done:
 		switch s.status {
 		case SchedulerStatusRunning:
 			s.status = SchedulerStatusFinished
-			return nil
+			receipts, logs := s.postProcess()
+			return receipts, logs, 0, nil
 		case SchedulerStatusReverted:
-			return ErrNeedSequentialExecution
+			return nil, nil, 0, ErrNeedSequentialExecution
+		// Should not happen
 		default:
-			return nil
+			return nil, nil, 0, ErrSchedulerUnknownStatus
 		}
 	}
 }
@@ -158,7 +158,10 @@ func (s *Scheduler) run(ctx context.Context, i int, header *types.Header, state 
 	end := int(math.Min(float64(start+s.batchSize), float64(len(s.txs))))
 
 	task := chain.NewTask(s.chain.Config(), state, header)
-	
+	s.mu.Lock()
+	s.tasks = append(s.tasks, task)
+	s.mu.Unlock()
+
 	for start < end {
 		select {
 		case <-ctx.Done():
@@ -176,13 +179,13 @@ func (s *Scheduler) run(ctx context.Context, i int, header *types.Header, state 
 		}
 
 		tracer := vm.NewCallTracer()
-		err, logs := task.CommitTransaction(tx, s.chain, constants.DefaultRewardBase, &vm.Config{
+		err, receipt := task.CommitTransaction(tx, s.chain, constants.DefaultRewardBase, &vm.Config{
 			Tracer: tracer,
 		})
 
 		s.mu.Lock()
 		s.processedTxs = append(s.processedTxs, tx)
-		s.processedLogs[len(s.processedTxs)-1] = logs
+		s.processedReceipts[len(s.processedTxs)-1] = receipt
 		s.mu.Unlock()
 
 		// TODO: better error handling
@@ -207,6 +210,28 @@ func (s *Scheduler) run(ctx context.Context, i int, header *types.Header, state 
 	}
 }
 
+// postProcess merges parallelly processed states and usedGas
+// Also sorts receipts and logs
+func (s *Scheduler) postProcess() (types.Receipts, []*types.Log) {
+	// TODO: implement
+	receipts, logs := s.sortReceipts()
+
+	return receipts, logs
+}
+
+func (s *Scheduler) sortReceipts() (types.Receipts, []*types.Log) {
+	receipts := make(types.Receipts, 0, len(s.processedReceipts))
+	logs := make([]*types.Log, 0, len(s.processedReceipts))
+	for idx, receipt := range s.processedReceipts {
+		receipts[idx] = receipt
+	}
+	for _, receipt := range receipts {
+		logs = append(logs, receipt.Logs...)
+	}
+
+	return receipts, logs
+}
+
 func (s *Scheduler) prepareHeader() (*types.Header, error) {
 	parent := s.chain.CurrentBlock()
 	nextBlockNum := new(big.Int).Add(parent.Number(), common.Big1)
@@ -227,10 +252,10 @@ func (s *Scheduler) prepareHeader() (*types.Header, error) {
 	return header, nil
 }
 
-func preCheckParallelExecution(txs []*types.Transaction) bool {
-	addressSet := make(map[common.Address]byte, len(txs)*3)
+func (s *Scheduler) preCheckParallelExecution() bool {
+	addressSet := make(map[common.Address]byte, len(s.txs)*3)
 
-	for _, tx := range txs {
+	for _, tx := range s.txs {
 		from, err := tx.From()
 		if err != nil || addressSet[from]&1 != 0 {
 			return false

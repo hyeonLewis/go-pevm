@@ -10,4 +10,5 @@ var (
 	ErrSchedulerFailed         = errors.New("scheduler failed")
 	ErrPrepareHeader           = errors.New("prepare header failed")
 	ErrSchedulerTimeout        = errors.New("scheduler timeout")
+	ErrSchedulerUnknownStatus  = errors.New("scheduler unknown status")
 )

@@ -75,7 +75,7 @@ func NewTask(config *params.ChainConfig, state *state.StateDB, header *types.Hea
 	}
 }
 
-func (env *Task) CommitTransaction(tx *types.Transaction, bc *blockchain.BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
+func (env *Task) CommitTransaction(tx *types.Transaction, bc *blockchain.BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, *types.Receipt) {
 	snap := env.state.Snapshot()
 
 	receipt, _, err := bc.ApplyTransaction(env.config, &rewardbase, env.state, env.header, tx, &env.header.GasUsed, vmConfig)
@@ -87,5 +87,5 @@ func (env *Task) CommitTransaction(tx *types.Transaction, bc *blockchain.BlockCh
 		return err, nil
 	}
 
-	return nil, receipt.Logs
+	return nil, receipt
 }

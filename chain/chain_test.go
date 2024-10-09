@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"crypto/rand"
 	"math/big"
 	"testing"
 
@@ -9,7 +8,6 @@ import (
 	"github.com/hyeonLewis/go-pevm/storage"
 	"github.com/kaiachain/kaia/blockchain/types"
 	"github.com/kaiachain/kaia/blockchain/vm"
-	"github.com/kaiachain/kaia/common"
 	"github.com/kaiachain/kaia/params"
 	"github.com/stretchr/testify/assert"
 )
@@ -35,18 +33,6 @@ func TestNewTask(t *testing.T) {
 
 	task := NewTask(config, state, chain.CurrentBlock().Header())
 	assert.NotNil(t, task)
-}
-
-func RandomBytes(len int) ([]byte, error) {
-	b := make([]byte, len)
-	_, _ = rand.Read(b)
-
-	return b, nil
-}
-
-func RandomHex() string {
-	b, _ := RandomBytes(32)
-	return common.BytesToHash(b).Hex()
 }
 
 func TestTask_CommitTransaction(t *testing.T) {
