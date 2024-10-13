@@ -22,7 +22,7 @@ func TestNewBlockchain(t *testing.T) {
 	assert.Equal(t, chain.CurrentBlock().NumberU64(), uint64(0))
 }
 
-func TestNewTask(t *testing.T) {
+func TestNewExecutor(t *testing.T) {
 	db := storage.NewInMemoryStorage()
 	storage.InjectGenesis(db)
 	config := params.MainnetChainConfig
@@ -31,8 +31,8 @@ func TestNewTask(t *testing.T) {
 	state, err := chain.State()
 	assert.NoError(t, err)
 
-	task := NewTask(config, state, chain.CurrentBlock().Header())
-	assert.NotNil(t, task)
+	executor := NewExecutor(config, state, chain.CurrentBlock().Header())
+	assert.NotNil(t, executor)
 }
 
 func TestTask_CommitTransaction(t *testing.T) {
@@ -48,9 +48,9 @@ func TestTask_CommitTransaction(t *testing.T) {
 	err = tx.Sign(types.NewEIP155Signer(config.ChainID), constants.ValidatorPrivateKey)
 	assert.NoError(t, err)
 
-	task := NewTask(config, state, chain.CurrentBlock().Header())
+	executor := NewExecutor(config, state, chain.CurrentBlock().Header())
 
-	err, _ = task.CommitTransaction(tx, chain, constants.DefaultRewardBase, &vm.Config{})
+	err, _ = executor.CommitTransaction(tx, chain, constants.DefaultRewardBase, &vm.Config{})
 	assert.NoError(t, err)
 
 	balance := state.GetBalance(constants.RandomAddress)

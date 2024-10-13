@@ -50,7 +50,32 @@ func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *t
 
 // }
 
-func (p *Processor) ProcessNewTxs() (types.Receipts, []*types.Log, uint64, error) {
+func (p *Processor) ProcessTx(txIndex int) (*types.Receipt, []*types.Log, uint64, error) {
+	var (
+		usedGas = new(uint64)
+		tx      = p.txs[txIndex]
+	)
+
+	// Extract author from the header
+	author, _ := p.bc.Engine().Author(p.header) // Ignore error, we're past header validation
+
+	// Iterate over and process the individual transactions
+	p.state.SetTxContext(tx.Hash(), p.header.Hash(), txIndex)
+	receipt, _, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	logs := receipt.Logs
+
+	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
+	if _, err := p.bc.Engine().Finalize(p.bc, p.header, p.state, []*types.Transaction{tx}, []*types.Receipt{receipt}); err != nil {
+		return nil, nil, 0, err
+	}
+
+	return receipt, logs, *usedGas, nil
+}
+
+func (p *Processor) ProcessTxsSequentially() (types.Receipts, []*types.Log, uint64, error) {
 	var (
 		receipts types.Receipts
 		usedGas  = new(uint64)

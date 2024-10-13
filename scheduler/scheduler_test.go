@@ -25,7 +25,7 @@ func generateCallFrame(depth int) vm.CallFrame {
 	}
 
 	calls := make([]vm.CallFrame, 0, depth)
-	// Total calls = 1 + depth + depth ^ 2
+	// Total calls = 1 + depth + depth ^ 2 + 1 (from address)
 	for i := 0; i < depth; i++ {
 		calls = append(calls, vm.CallFrame{
 			From: *randomAddress(),
@@ -46,23 +46,23 @@ func generateCallFrame(depth int) vm.CallFrame {
 	return top
 }
 
-func TestGetTouchedTos(t *testing.T) {
+func TestGetTouchedAddrs(t *testing.T) {
 	callFrame := generateCallFrame(10)
-	touchedTos := getTouchedTos(callFrame)
+	touchedAddrs := getTouchedAddrs(callFrame)
 
-	assert.Equal(t, len(touchedTos), 111)
+	assert.Equal(t, len(touchedAddrs), 112)
 }
 
 func TestShouldRevert(t *testing.T) {
 	callFrame := generateCallFrame(10)
-	touchedTos := getTouchedTos(callFrame)
+	touchedAddrs := getTouchedAddrs(callFrame)
 
 	chain := testBlockchain()
 	scheduler := NewScheduler(chain, []*types.Transaction{})
-	assert.False(t, scheduler.shouldRevert(touchedTos))
+	assert.False(t, scheduler.shouldRevert(touchedAddrs))
 
-	scheduler.setTouchedTos(touchedTos)
-	assert.True(t, scheduler.shouldRevert(touchedTos))
+	scheduler.setTouchedAddrs(touchedAddrs)
+	assert.True(t, scheduler.shouldRevert(touchedAddrs))
 }
 
 func testBlockchain() *blockchain.BlockChain {

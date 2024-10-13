@@ -61,21 +61,21 @@ func NewBlockchain(db database.DBManager, config *params.ChainConfig) *blockchai
 	return chain
 }
 
-type Task struct {
+type Executor struct {
 	config *params.ChainConfig
 	state  *state.StateDB
 	header *types.Header
 }
 
-func NewTask(config *params.ChainConfig, state *state.StateDB, header *types.Header) *Task {
-	return &Task{
+func NewExecutor(config *params.ChainConfig, state *state.StateDB, header *types.Header) *Executor {
+	return &Executor{
 		config: config,
 		state:  state,
 		header: header,
 	}
 }
 
-func (env *Task) CommitTransaction(tx *types.Transaction, bc *blockchain.BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, *types.Receipt) {
+func (env *Executor) CommitTransaction(tx *types.Transaction, bc *blockchain.BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, *types.Receipt) {
 	snap := env.state.Snapshot()
 
 	receipt, _, err := bc.ApplyTransaction(env.config, &rewardbase, env.state, env.header, tx, &env.header.GasUsed, vmConfig)
