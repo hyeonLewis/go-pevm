@@ -30,7 +30,7 @@ type Scheduler struct {
 	txIndex           int
 	processedTxs      []*types.Transaction
 	processedReceipts map[int]*types.Receipt
-	touchedAddrs        map[common.Address]struct{}
+	touchedAddrs      map[common.Address]struct{}
 
 	done chan struct{}
 
@@ -50,7 +50,7 @@ func NewScheduler(chain *blockchain.BlockChain, txs []*types.Transaction) *Sched
 		batchSize:         batchSize,
 		processedTxs:      make([]*types.Transaction, 0),
 		processedReceipts: make(map[int]*types.Receipt),
-		touchedAddrs:        make(map[common.Address]struct{}),
+		touchedAddrs:      make(map[common.Address]struct{}),
 		done:              make(chan struct{}),
 	}
 }

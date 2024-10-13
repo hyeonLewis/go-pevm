@@ -3,7 +3,6 @@ package processor
 import (
 	"errors"
 
-	"github.com/hyeonLewis/go-pevm/scheduler"
 	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/state"
 	"github.com/kaiachain/kaia/blockchain/types"
@@ -16,8 +15,13 @@ type Processor struct {
 	header   *types.Header
 	state    *state.StateDB
 	vmConfig vm.Config
+}
 
-	scheduler *scheduler.Scheduler
+type Result struct {
+	Receipt *types.Receipt
+	Logs    []*types.Log
+	UsedGas uint64
+	Trace   *vm.InternalTxTrace
 }
 
 var ErrNilArgument = errors.New("nil argument")
@@ -34,23 +38,16 @@ func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *t
 		return nil, err
 	}
 
-	scheduler := scheduler.NewScheduler(bc, txs)
-
 	return &Processor{
-		txs:       txs,
-		bc:        bc,
-		header:    header,
-		state:     state,
-		vmConfig:  vmConfig,
-		scheduler: scheduler,
+		txs:      txs,
+		bc:       bc,
+		header:   header,
+		state:    state,
+		vmConfig: vmConfig,
 	}, nil
 }
 
-// func (p *Processor) Execute() (types.Receipts, []*types.Log, uint64, []*vm.InternalTxTrace, error)  {
-
-// }
-
-func (p *Processor) ProcessTx(txIndex int) (*types.Receipt, []*types.Log, uint64, error) {
+func (p *Processor) ProcessTx(txIndex int) (*Result, error) {
 	var (
 		usedGas = new(uint64)
 		tx      = p.txs[txIndex]
@@ -61,25 +58,26 @@ func (p *Processor) ProcessTx(txIndex int) (*types.Receipt, []*types.Log, uint64
 
 	// Iterate over and process the individual transactions
 	p.state.SetTxContext(tx.Hash(), p.header.Hash(), txIndex)
-	receipt, _, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
+	receipt, trace, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, err
 	}
 	logs := receipt.Logs
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	if _, err := p.bc.Engine().Finalize(p.bc, p.header, p.state, []*types.Transaction{tx}, []*types.Receipt{receipt}); err != nil {
-		return nil, nil, 0, err
+		return nil, err
 	}
 
-	return receipt, logs, *usedGas, nil
+	return &Result{Receipt: receipt, Logs: logs, UsedGas: *usedGas, Trace: trace}, nil
 }
 
-func (p *Processor) ProcessTxsSequentially() (types.Receipts, []*types.Log, uint64, error) {
+func (p *Processor) ProcessTxsSequentially() (types.Receipts, []*types.Log, uint64, []*vm.InternalTxTrace, error) {
 	var (
-		receipts types.Receipts
-		usedGas  = new(uint64)
-		allLogs  []*types.Log
+		receipts         types.Receipts
+		usedGas          = new(uint64)
+		allLogs          []*types.Log
+		internalTxTraces []*vm.InternalTxTrace
 	)
 
 	// Extract author from the header
@@ -88,18 +86,19 @@ func (p *Processor) ProcessTxsSequentially() (types.Receipts, []*types.Log, uint
 	// Iterate over and process the individual transactions
 	for i, tx := range p.txs {
 		p.state.SetTxContext(tx.Hash(), p.header.Hash(), i)
-		receipt, _, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
+		receipt, trace, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, 0, nil, err
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+		internalTxTraces = append(internalTxTraces, trace)
 	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	if _, err := p.bc.Engine().Finalize(p.bc, p.header, p.state, p.txs, receipts); err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, err
 	}
 
-	return receipts, allLogs, *usedGas, nil
+	return receipts, allLogs, *usedGas, internalTxTraces, nil
 }

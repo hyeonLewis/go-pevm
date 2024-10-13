@@ -25,13 +25,12 @@ func TestProcessTx(t *testing.T) {
 	processor, err := NewProcessor([]*types.Transaction{tx}, bc, bc.CurrentBlock().Header(), vm.Config{})
 	assert.NoError(t, err)
 
-	receipt, _, usedGas, err := processor.ProcessTx(0)
+	result, err := processor.ProcessTx(0)
 	assert.NoError(t, err)
-	assert.Equal(t, receipt.Status, types.ReceiptStatusSuccessful)
-	assert.Equal(t, usedGas, uint64(21000))
+	assert.Equal(t, result.Receipt.Status, types.ReceiptStatusSuccessful)
+	assert.Equal(t, result.UsedGas, uint64(21000))
 	assert.Equal(t, processor.state.GetBalance(constants.RandomAddress).Uint64(), uint64(5))
 }
-
 
 func TestProcessNewTxs(t *testing.T) {
 	db := storage.NewInMemoryStorage()
@@ -46,7 +45,7 @@ func TestProcessNewTxs(t *testing.T) {
 	processor, err := NewProcessor([]*types.Transaction{tx}, bc, bc.CurrentBlock().Header(), vm.Config{})
 	assert.NoError(t, err)
 
-	receipts, _, usedGas, err := processor.ProcessTxsSequentially()
+	receipts, _, usedGas, _, err := processor.ProcessTxsSequentially()
 	assert.NoError(t, err)
 	assert.Equal(t, receipts[0].Status, types.ReceiptStatusSuccessful)
 	assert.Equal(t, usedGas, uint64(21000))
