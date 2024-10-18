@@ -170,6 +170,9 @@ func (v *valueItem) IsEstimate() bool {
 
 // Value implements MultiVersionValueItem.
 func (v *valueItem) Value() common.Hash {
+	if v == nil {
+		return common.Hash{}
+	}
 	return v.value
 }
 

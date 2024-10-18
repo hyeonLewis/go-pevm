@@ -30,11 +30,17 @@ func (k StorageKey) Bytes() []byte {
 
 func (k StorageKey) Address() common.Address {
 	split := strings.Split(string(k), ":")
+	if len(split) < 1 {
+		return common.Address{}
+	}
 	return common.HexToAddress(split[0])
 }
 
 func (k StorageKey) Slot() common.Hash {
 	split := strings.Split(string(k), ":")
+	if len(split) < 2 {
+		return common.Hash{}
+	}
 	return common.HexToHash(split[1])
 }
 

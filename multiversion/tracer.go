@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"sync"
 
 	"github.com/kaiachain/kaia/blockchain/vm"
 	"github.com/kaiachain/kaia/common"
@@ -44,8 +43,6 @@ type AccessListTracer struct {
 	incarnation      int
 
 	abortedChannel chan Abort
-
-	mtx sync.Mutex
 }
 
 func NewAccessListTracer(multiVersionStore MultiVersionStore, transactionIndex int, incarnation int, abortedChannel chan Abort) *AccessListTracer {
@@ -177,6 +174,38 @@ func (a *AccessListTracer) UpdateReadSet(key StorageKey, value common.Hash) {
 	a.readset[key] = append(a.readset[key], value)
 }
 
+// Delete implements types.KVStore.
+func (a *AccessListTracer) Delete(key StorageKey) {
+	// TODO: remove?
+	// store.mtx.Lock()
+	// defer store.mtx.Unlock()
+	// defer telemetry.MeasureSince(time.Now(), "store", "mvkv", "delete")
+
+	if key.Bytes() == nil {
+		return
+	}
+	a.setValue(key, common.Hash{})
+}
+
+// Has implements types.KVStore.
+func (a *AccessListTracer) Has(key StorageKey) bool {
+	// necessary locking happens within store.Get
+	return a.Get(key) != common.Hash{}
+}
+
+// Set implements types.KVStore.
+func (a *AccessListTracer) Set(key StorageKey, value common.Hash) {
+	// TODO: remove?
+	// store.mtx.Lock()
+	// defer store.mtx.Unlock()
+	// defer telemetry.MeasureSince(time.Now(), "store", "mvkv", "set")
+
+	if key.Bytes() == nil {
+		return
+	}
+	a.setValue(key, value)
+}
+
 func (*AccessListTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost, ccLeft, ccOpcode uint64, scope *vm.ScopeContext, depth int, err error) {
 }
 
@@ -238,14 +267,48 @@ func (a *AccessListTracer) ValidateReadset() bool {
 		}
 
 		// TODO-Kaia: Check if we need to care about this case
-		// parentValue := a.state.GetState(key.Address(), key.Slot())
-		// if parentValue != value {
-		// 	// this shouldnt happen because if we have a conflict it should always happen within multiversion store
-		// 	panic("we shouldn't ever have a readset conflict in parent store")
-		// }
+		parentValue := a.multiVersionStore.GetParentState().GetState(key.Address(), key.Slot())
+		if parentValue != value {
+			// this shouldnt happen because if we have a conflict it should always happen within multiversion store
+			panic("we shouldn't ever have a readset conflict in parent store")
+		}
 		// value was correct, we can continue to the next value
 	}
 	return true
+}
+
+// Get implements types.KVStore.
+func (a *AccessListTracer) Get(key StorageKey) common.Hash {
+	if key.Bytes() == nil {
+		return common.Hash{}
+	}
+	// first check the MVKV writeset, and return that value if present
+	cacheValue, ok := a.writeset[key]
+	if ok {
+		// return the value from the cache, no need to update any readset stuff
+		return cacheValue
+	}
+	// read the readset to see if the value exists - and return if applicable
+	if readsetVal, ok := a.readset[key]; ok {
+		// just return the first one, if there is more than one, we will fail the validation anyways
+		return readsetVal[0]
+	}
+
+	// if we didn't find it, then we want to check the multivalue store + add to readset if applicable
+	mvsValue := a.multiVersionStore.GetLatestBeforeIndex(a.transactionIndex, key)
+	if mvsValue != nil {
+		if mvsValue.IsEstimate() {
+			abort := NewEstimateAbort(mvsValue.Index())
+			a.WriteAbort(abort)
+			panic(abort)
+		} else {
+			// This handles both detecting readset conflicts and updating readset if applicable
+			return a.parseValueAndUpdateReadset(key, mvsValue)
+		}
+	}
+	parentValue := key.GetValue(a.multiVersionStore.GetParentState())
+	a.UpdateReadSet(key, parentValue)
+	return parentValue
 }
 
 // Get implements types.KVStore.
@@ -266,6 +329,7 @@ func (a *AccessListTracer) ValidGet(key StorageKey) {
 			a.parseValueAndUpdateReadset(key, mvsValue)
 		}
 	}
+
 }
 
 func (a *AccessListTracer) parseValueAndUpdateReadset(key StorageKey, mvsValue MultiVersionValueItem) common.Hash {
@@ -275,6 +339,24 @@ func (a *AccessListTracer) parseValueAndUpdateReadset(key StorageKey, mvsValue M
 	}
 	a.UpdateReadSet(key, value)
 	return value
+}
+
+// Only entrypoint to mutate writeset
+func (a *AccessListTracer) setValue(key StorageKey, value common.Hash) {
+	if key.Bytes() == nil {
+		return
+	}
+
+	a.writeset[key] = value
+}
+
+func (a *AccessListTracer) WriteEstimatesToMultiVersionStore() {
+	// TODO: remove?
+	// store.mtx.Lock()
+	// defer store.mtx.Unlock()
+	// defer telemetry.MeasureSince(time.Now(), "store", "mvkv", "write_mvs")
+	a.multiVersionStore.SetEstimatedWriteset(a.transactionIndex, a.incarnation, a.writeset)
+	// TODO: do we need to write readset and iterateset in this case? I don't think so since if this is called it means we aren't doing validation
 }
 
 func (a *AccessListTracer) WriteToMultiVersionStore() {

@@ -11,6 +11,7 @@ import (
 type MultiVersionStore interface {
 	GetLatest(key StorageKey) (value MultiVersionValueItem)
 	GetLatestBeforeIndex(index int, key StorageKey) (value MultiVersionValueItem)
+	GetParentState() *state.StateDB
 	Has(index int, key StorageKey) bool
 	WriteLatestToStore(state *state.StateDB)
 	SetWriteset(index int, incarnation int, writeset WriteSet)
@@ -42,9 +43,6 @@ type Store struct {
 }
 
 func NewMultiVersionStore(parentStore *state.StateDB) *Store {
-	if parentStore == nil {
-		panic("parentState cannot be nil")
-	}
 	return &Store{
 		multiVersionMap: &sync.Map{},
 		txWritesetKeys:  &sync.Map{},
@@ -52,6 +50,10 @@ func NewMultiVersionStore(parentStore *state.StateDB) *Store {
 		txIterateSets:   &sync.Map{},
 		parentStore:     parentStore,
 	}
+}
+
+func (s *Store) GetParentState() *state.StateDB {
+	return s.parentStore
 }
 
 // GetLatest implements MultiVersionStore.

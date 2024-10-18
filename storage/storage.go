@@ -43,6 +43,11 @@ func InjectGenesis(db database.DBManager) {
 	}
 }
 
+func Has(state *state.StateDB, addr common.Address, key common.Hash) bool {
+	value := state.GetState(addr, key)
+	return value != (common.Hash{})
+}
+
 func CommitPreState(strBn string, state *state.StateDB) common.Hash {
 	file, err := os.Open("../data/" + strBn + "/pre_state.json")
 	if err != nil {
