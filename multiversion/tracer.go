@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"sort"
 
+	"github.com/kaiachain/kaia/blockchain/types"
 	"github.com/kaiachain/kaia/blockchain/vm"
 	"github.com/kaiachain/kaia/common"
 )
@@ -39,13 +40,16 @@ type AccessListTracer struct {
 
 	multiVersionStore MultiVersionStore
 
+	msg *types.Transaction
+
 	transactionIndex int
 	incarnation      int
 
 	abortedChannel chan Abort
 }
 
-func NewAccessListTracer(multiVersionStore MultiVersionStore, transactionIndex int, incarnation int, abortedChannel chan Abort) *AccessListTracer {
+// TODO-kaia: add initial value transfer to writeset?
+func NewAccessListTracer(multiVersionStore MultiVersionStore, msg *types.Transaction, transactionIndex int, incarnation int, abortedChannel chan Abort) *AccessListTracer {
 	excl := make(map[common.Address]struct{})
 	precompiles := vm.PrecompiledAddressCancun
 	for _, addr := range precompiles {
@@ -56,6 +60,7 @@ func NewAccessListTracer(multiVersionStore MultiVersionStore, transactionIndex i
 		readset:           make(map[StorageKey][]common.Hash),
 		writeset:          make(map[StorageKey]common.Hash),
 		multiVersionStore: multiVersionStore,
+		msg:               msg,
 		transactionIndex:  transactionIndex,
 		incarnation:       incarnation,
 		abortedChannel:    abortedChannel,
@@ -80,7 +85,21 @@ func (a *AccessListTracer) WriteAbort(abort Abort) {
 	}
 }
 
+// TOOD-kaia: handle balance writes
+func (a *AccessListTracer) UpdateBalance(addr common.Address, balance *big.Int) {
+	storageKey := ToStorageKey(addr, BalanceKey)
+	a.ValidGet(storageKey)
+	a.UpdateReadSet(storageKey, common.BigToHash(balance))
+}
+
 func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
+	validatedFeePayer := a.msg.ValidatedFeePayer()
+	validatedSender := a.msg.ValidatedSender()
+	_, isRatioTx := a.msg.FeeRatio()
+	a.UpdateBalance(validatedFeePayer, env.StateDB.GetBalance(validatedFeePayer))
+	if isRatioTx {
+		a.UpdateBalance(validatedSender, env.StateDB.GetBalance(validatedSender))
+	}
 }
 
 // CaptureState captures all opcodes that touch storage or addresses and adds them to the accesslist.
@@ -90,13 +109,6 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 	stackLen := len(stackData)
 
 	switch op {
-	case vm.SSTORE:
-		if stackLen >= 2 {
-			slot := common.Hash(stackData[stackLen-1].Bytes32())
-			value := stackData[stackLen-2].Bytes()
-			storageKey := ToStorageKey(scope.Contract.Address(), slot)
-			a.writeset[storageKey] = common.BytesToHash(value)
-		}
 	case vm.SLOAD:
 		if stackLen >= 1 {
 			slot := common.Hash(stackData[stackLen-1].Bytes32())
@@ -104,6 +116,13 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 			storageKey := ToStorageKey(scope.Contract.Address(), slot)
 			a.ValidGet(storageKey)
 			a.UpdateReadSet(storageKey, value)
+		}
+	case vm.SSTORE:
+		if stackLen >= 2 {
+			slot := common.Hash(stackData[stackLen-1].Bytes32())
+			value := stackData[stackLen-2].Bytes()
+			storageKey := ToStorageKey(scope.Contract.Address(), slot)
+			a.setValue(storageKey, common.BytesToHash(value))
 		}
 	case vm.EXTCODECOPY:
 		if stackLen >= 4 {
@@ -146,6 +165,17 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 				a.UpdateReadSet(storageKey, common.BigToHash(balance))
 			}
 		}
+	case vm.CALL, vm.CALLCODE:
+		if stackLen >= 1 {
+			fromAddr := scope.Contract.CallerAddress
+			toAddr := common.Address(stackData[stackLen-1].Bytes20())
+			value := scope.Contract.Value()
+			if value.Sign() > 0 && fromAddr != toAddr {
+				a.UpdateBalance(fromAddr, env.StateDB.GetBalance(fromAddr))
+				a.UpdateBalance(toAddr, env.StateDB.GetBalance(toAddr))
+			}
+
+		}
 	case vm.SELFDESTRUCT:
 		// Need sequential execution to detect selfdestruct
 		a.WriteAbort(Abort{
@@ -156,8 +186,6 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 		// do nothing for other opcodes
 	}
 }
-
-// vm.EXTCODEHASH, vm.EXTCODESIZE, vm.BALANCE, vm.SELFDESTRUCT
 
 func (a *AccessListTracer) UpdateReadSet(key StorageKey, value common.Hash) {
 	if _, ok := a.readset[key]; !ok {
@@ -311,7 +339,6 @@ func (a *AccessListTracer) Get(key StorageKey) common.Hash {
 	return parentValue
 }
 
-// Get implements types.KVStore.
 func (a *AccessListTracer) ValidGet(key StorageKey) {
 	if key.Bytes() == nil {
 		return
@@ -324,12 +351,8 @@ func (a *AccessListTracer) ValidGet(key StorageKey) {
 			abort := NewEstimateAbort(mvsValue.Index())
 			a.WriteAbort(abort)
 			panic(abort)
-		} else {
-			// This handles both detecting readset conflicts and updating readset if applicable
-			a.parseValueAndUpdateReadset(key, mvsValue)
 		}
 	}
-
 }
 
 func (a *AccessListTracer) parseValueAndUpdateReadset(key StorageKey, mvsValue MultiVersionValueItem) common.Hash {

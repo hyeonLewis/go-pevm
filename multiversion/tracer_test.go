@@ -11,7 +11,7 @@ func TestVersionIndexedStoreGetters(t *testing.T) {
 	parentState := prepareState()
 	mvs := NewMultiVersionStore(parentState)
 	// initialize a new VersionIndexedStore
-	vis := NewAccessListTracer(mvs, 1, 2, make(chan Abort, 1))
+	vis := NewAccessListTracer(mvs, nil, 1, 2, make(chan Abort, 1))
 
 	// mock a value in the parent store
 	parentState.SetState(key1Addr, key1, value1)
@@ -62,7 +62,7 @@ func TestVersionIndexedStoreGetters(t *testing.T) {
 	require.True(t, vis.Has(ToStorageKey(key1Addr, key3)))
 
 	// try a read that falls through to MVS with a later tx index
-	vis2 := NewAccessListTracer(mvs, 3, 2, make(chan Abort, 1))
+	vis2 := NewAccessListTracer(mvs, nil, 3, 2, make(chan Abort, 1))
 	val5 := vis2.Get(ToStorageKey(key1Addr, key3))
 	// should equal value3 because value4 is later than the key in question
 	require.Equal(t, value4, val5)
@@ -70,7 +70,7 @@ func TestVersionIndexedStoreGetters(t *testing.T) {
 
 	// test estimate values writing to abortChannel
 	abortChannel := make(chan Abort, 1)
-	vis3 := NewAccessListTracer(mvs, 6, 2, abortChannel)
+	vis3 := NewAccessListTracer(mvs, nil, 6, 2, abortChannel)
 	require.Panics(t, func() {
 		vis3.Get(ToStorageKey(key1Addr, key3))
 	})
@@ -93,7 +93,7 @@ func TestVersionIndexedStoreSetters(t *testing.T) {
 	parentState := prepareState()
 	mvs := NewMultiVersionStore(parentState)
 	// initialize a new VersionIndexedStore
-	vis := NewAccessListTracer(mvs, 1, 2, make(chan Abort, 1))
+	vis := NewAccessListTracer(mvs, nil, 1, 2, make(chan Abort, 1))
 
 	// test simple set
 	vis.Set(storageKey1, value1)
@@ -117,7 +117,7 @@ func TestVersionIndexedStoreWriteEstimates(t *testing.T) {
 	parentState := prepareState()
 	mvs := NewMultiVersionStore(parentState)
 	// initialize a new VersionIndexedStore
-	vis := NewAccessListTracer(mvs, 1, 2, make(chan Abort, 1))
+	vis := NewAccessListTracer(mvs, nil, 1, 2, make(chan Abort, 1))
 
 	mvs.SetWriteset(0, 1, map[StorageKey]common.Hash{
 		storageKey3: value3,
@@ -144,7 +144,7 @@ func TestVersionIndexedStoreValidation(t *testing.T) {
 	mvs := NewMultiVersionStore(parentState)
 	// initialize a new VersionIndexedStore
 	abortC := make(chan Abort, 1)
-	vis := NewAccessListTracer(mvs, 2, 2, abortC)
+	vis := NewAccessListTracer(mvs, nil, 2, 2, abortC)
 	// set some initial values
 	parentState.SetState(key4Addr, key4, value4)
 	parentState.SetState(key5Addr, key5, value5)
