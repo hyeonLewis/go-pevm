@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"sort"
 
+	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/types"
 	"github.com/kaiachain/kaia/blockchain/vm"
 	"github.com/kaiachain/kaia/common"
@@ -40,7 +41,9 @@ type AccessListTracer struct {
 
 	multiVersionStore MultiVersionStore
 
-	msg *types.Transaction
+	msg blockchain.Message
+
+	gasPrice *big.Int
 
 	transactionIndex int
 	incarnation      int
@@ -49,7 +52,7 @@ type AccessListTracer struct {
 }
 
 // TODO-kaia: add initial value transfer to writeset?
-func NewAccessListTracer(multiVersionStore MultiVersionStore, msg *types.Transaction, transactionIndex int, incarnation int, abortedChannel chan Abort) *AccessListTracer {
+func NewAccessListTracer(multiVersionStore MultiVersionStore, msg blockchain.Message, transactionIndex int, incarnation int, abortedChannel chan Abort) *AccessListTracer {
 	excl := make(map[common.Address]struct{})
 	precompiles := vm.PrecompiledAddressCancun
 	for _, addr := range precompiles {
@@ -85,21 +88,44 @@ func (a *AccessListTracer) WriteAbort(abort Abort) {
 	}
 }
 
-// TOOD-kaia: handle balance writes
-func (a *AccessListTracer) UpdateBalance(addr common.Address, balance *big.Int) {
+func (a *AccessListTracer) updateBalance(addr common.Address, balance *big.Int) {
 	storageKey := ToStorageKey(addr, BalanceKey)
 	a.ValidGet(storageKey)
 	a.UpdateReadSet(storageKey, common.BigToHash(balance))
 }
 
 func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
-	validatedFeePayer := a.msg.ValidatedFeePayer()
-	validatedSender := a.msg.ValidatedSender()
-	_, isRatioTx := a.msg.FeeRatio()
-	a.UpdateBalance(validatedFeePayer, env.StateDB.GetBalance(validatedFeePayer))
-	if isRatioTx {
-		a.UpdateBalance(validatedSender, env.StateDB.GetBalance(validatedSender))
+	if a.gasPrice == nil {
+		a.gasPrice = env.GasPrice
 	}
+
+	feePayer := a.msg.ValidatedFeePayer()
+	sender := a.msg.ValidatedSender()
+	feeRatio, isRatioTx := a.msg.FeeRatio()
+	gasFee := new(big.Int).Mul(new(big.Int).SetUint64(a.msg.Gas()), a.gasPrice)
+	if isRatioTx {
+		a.handleRatioTransaction(env.StateDB.GetBalance(feePayer), env.StateDB.GetBalance(sender), feePayer, sender, feeRatio, gasFee)
+	} else {
+		a.handleRegularTransaction(env.StateDB.GetBalance(feePayer), feePayer, gasFee)
+	}
+}
+
+func (a *AccessListTracer) handleRatioTransaction(balanceOfFeePayer, balanceOfSender *big.Int, feePayer, sender common.Address, feeRatio types.FeeRatio, gasFee *big.Int) {
+	feePayerFee, senderFee := types.CalcFeeWithRatio(feeRatio, gasFee)
+
+	a.updateAndSetBalance(balanceOfFeePayer, feePayer, feePayerFee)
+	a.updateAndSetBalance(balanceOfSender, sender, senderFee)
+}
+
+func (a *AccessListTracer) handleRegularTransaction(balanceOfFeePayer *big.Int, feePayer common.Address, gasFee *big.Int) {
+	a.updateAndSetBalance(balanceOfFeePayer, feePayer, gasFee)
+}
+
+func (a *AccessListTracer) updateAndSetBalance(balance *big.Int, address common.Address, value *big.Int) {
+	a.updateBalance(address, balance)
+
+	newBalance := new(big.Int).Sub(balance, value)
+	a.setValue(ToStorageKey(address, BalanceKey), common.BigToHash(newBalance))
 }
 
 // CaptureState captures all opcodes that touch storage or addresses and adds them to the accesslist.
@@ -171,8 +197,8 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 			toAddr := common.Address(stackData[stackLen-1].Bytes20())
 			value := scope.Contract.Value()
 			if value.Sign() > 0 && fromAddr != toAddr {
-				a.UpdateBalance(fromAddr, env.StateDB.GetBalance(fromAddr))
-				a.UpdateBalance(toAddr, env.StateDB.GetBalance(toAddr))
+				a.updateAndSetBalance(env.StateDB.GetBalance(fromAddr), fromAddr, value)
+				a.updateAndSetBalance(env.StateDB.GetBalance(toAddr), toAddr, new(big.Int).Neg(value))
 			}
 
 		}
@@ -246,7 +272,22 @@ func (*AccessListTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
 
 func (*AccessListTracer) CaptureTxStart(gasLimit uint64) {}
 
-func (*AccessListTracer) CaptureTxEnd(restGas uint64) {}
+func (a *AccessListTracer) CaptureTxEnd(restGas uint64) {
+	remaining := new(big.Int).Mul(new(big.Int).SetUint64(restGas), a.gasPrice)
+	validatedFeePayer := a.msg.ValidatedFeePayer()
+	validatedSender := a.msg.ValidatedSender()
+	feeRatio, isRatioTx := a.msg.FeeRatio()
+	if isRatioTx {
+		feePayer, feeSender := types.CalcFeeWithRatio(feeRatio, remaining)
+		balanceOfFeePayer := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedFeePayer, BalanceKey)).Bytes())
+		a.updateAndSetBalance(balanceOfFeePayer, validatedFeePayer, new(big.Int).Neg(feePayer))
+		balanceOfSender := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedSender, BalanceKey)).Bytes())
+		a.updateAndSetBalance(balanceOfSender, validatedSender, new(big.Int).Neg(feeSender))
+	} else {
+		balanceOfFeePayer := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedFeePayer, BalanceKey)).Bytes())
+		a.updateAndSetBalance(balanceOfFeePayer, validatedFeePayer, new(big.Int).Neg(remaining))
+	}
+}
 
 // This function iterates over the readset, validating that the values in the readset are consistent with the values in the multiversion store and underlying parent store, and returns a boolean indicating validity
 func (a *AccessListTracer) ValidateReadset() bool {
