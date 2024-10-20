@@ -16,6 +16,7 @@ var (
 	CodeSizeKey     = common.BytesToHash([]byte("codesize"))
 	BalanceKey      = common.BytesToHash([]byte("balance"))
 	SelfDestructKey = common.BytesToHash([]byte("selfdestruct"))
+	NonceKey        = common.BytesToHash([]byte("nonce"))
 )
 
 type StorageKey string

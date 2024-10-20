@@ -88,17 +88,12 @@ func (a *AccessListTracer) WriteAbort(abort Abort) {
 	}
 }
 
-func (a *AccessListTracer) updateBalance(addr common.Address, balance *big.Int) {
-	storageKey := ToStorageKey(addr, BalanceKey)
-	a.ValidGet(storageKey)
-	a.UpdateReadSet(storageKey, common.BigToHash(balance))
-}
-
 func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
 	if a.gasPrice == nil {
 		a.gasPrice = env.GasPrice
 	}
 
+	// Gas fee related logic
 	feePayer := a.msg.ValidatedFeePayer()
 	sender := a.msg.ValidatedSender()
 	feeRatio, isRatioTx := a.msg.FeeRatio()
@@ -108,24 +103,17 @@ func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to com
 	} else {
 		a.handleRegularTransaction(env.StateDB.GetBalance(feePayer), feePayer, gasFee)
 	}
-}
 
-func (a *AccessListTracer) handleRatioTransaction(balanceOfFeePayer, balanceOfSender *big.Int, feePayer, sender common.Address, feeRatio types.FeeRatio, gasFee *big.Int) {
-	feePayerFee, senderFee := types.CalcFeeWithRatio(feeRatio, gasFee)
-
-	a.updateAndSetBalance(balanceOfFeePayer, feePayer, feePayerFee)
-	a.updateAndSetBalance(balanceOfSender, sender, senderFee)
-}
-
-func (a *AccessListTracer) handleRegularTransaction(balanceOfFeePayer *big.Int, feePayer common.Address, gasFee *big.Int) {
-	a.updateAndSetBalance(balanceOfFeePayer, feePayer, gasFee)
-}
-
-func (a *AccessListTracer) updateAndSetBalance(balance *big.Int, address common.Address, value *big.Int) {
-	a.updateBalance(address, balance)
-
-	newBalance := new(big.Int).Sub(balance, value)
-	a.setValue(ToStorageKey(address, BalanceKey), common.BigToHash(newBalance))
+	// Nonce related logic
+	isContractSender := env.StateDB.IsProgramAccount(sender)
+	if isContractSender {
+		if create {
+			nonce := env.StateDB.GetNonce(sender)
+			a.updateAndSetNonce(sender, nonce)
+		}
+	} else {
+		a.updateAndSetNonce(sender, env.StateDB.GetNonce(sender))
+	}
 }
 
 // CaptureState captures all opcodes that touch storage or addresses and adds them to the accesslist.
@@ -430,6 +418,41 @@ func (a *AccessListTracer) WriteToMultiVersionStore() {
 	// defer telemetry.MeasureSince(time.Now(), "store", "mvkv", "write_mvs")
 	a.multiVersionStore.SetWriteset(a.transactionIndex, a.incarnation, a.writeset)
 	a.multiVersionStore.SetReadset(a.transactionIndex, a.readset)
+}
+
+func (a *AccessListTracer) updateBalance(addr common.Address, balance *big.Int) {
+	storageKey := ToStorageKey(addr, BalanceKey)
+	a.ValidGet(storageKey)
+	a.UpdateReadSet(storageKey, common.BigToHash(balance))
+}
+
+func (a *AccessListTracer) updateNonce(addr common.Address, nonce uint64) {
+	storageKey := ToStorageKey(addr, NonceKey)
+	a.ValidGet(storageKey)
+	a.UpdateReadSet(storageKey, common.BigToHash(big.NewInt(int64(nonce))))
+}
+
+func (a *AccessListTracer) handleRatioTransaction(balanceOfFeePayer, balanceOfSender *big.Int, feePayer, sender common.Address, feeRatio types.FeeRatio, gasFee *big.Int) {
+	feePayerFee, senderFee := types.CalcFeeWithRatio(feeRatio, gasFee)
+
+	a.updateAndSetBalance(balanceOfFeePayer, feePayer, feePayerFee)
+	a.updateAndSetBalance(balanceOfSender, sender, senderFee)
+}
+
+func (a *AccessListTracer) handleRegularTransaction(balanceOfFeePayer *big.Int, feePayer common.Address, gasFee *big.Int) {
+	a.updateAndSetBalance(balanceOfFeePayer, feePayer, gasFee)
+}
+
+func (a *AccessListTracer) updateAndSetBalance(balance *big.Int, address common.Address, value *big.Int) {
+	a.updateBalance(address, balance)
+
+	newBalance := new(big.Int).Sub(balance, value)
+	a.setValue(ToStorageKey(address, BalanceKey), common.BigToHash(newBalance))
+}
+
+func (a *AccessListTracer) updateAndSetNonce(address common.Address, nonce uint64) {
+	a.updateNonce(address, nonce)
+	a.setValue(ToStorageKey(address, NonceKey), common.BigToHash(new(big.Int).SetUint64(nonce+1)))
 }
 
 // getData returns a slice from the data based on the start and size and pads
