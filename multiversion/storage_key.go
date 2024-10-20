@@ -60,6 +60,9 @@ func (k StorageKey) GetValue(stateDB *state.StateDB) common.Hash {
 	case BalanceKey:
 		balance := stateDB.GetBalance(k.Address())
 		return common.BigToHash(balance)
+	case NonceKey:
+		nonce := stateDB.GetNonce(k.Address())
+		return common.BigToHash(big.NewInt(int64(nonce)))
 	case SelfDestructKey:
 		return common.Hash{}
 	default:

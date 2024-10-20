@@ -99,20 +99,19 @@ func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to com
 	feeRatio, isRatioTx := a.msg.FeeRatio()
 	gasFee := new(big.Int).Mul(new(big.Int).SetUint64(a.msg.Gas()), a.gasPrice)
 	if isRatioTx {
-		a.handleRatioTransaction(env.StateDB.GetBalance(feePayer), env.StateDB.GetBalance(sender), feePayer, sender, feeRatio, gasFee)
+		a.handleRatioTransaction(feePayer, sender, feeRatio, gasFee)
 	} else {
-		a.handleRegularTransaction(env.StateDB.GetBalance(feePayer), feePayer, gasFee)
+		a.handleRegularTransaction(feePayer, gasFee)
 	}
 
 	// Nonce related logic
 	isContractSender := env.StateDB.IsProgramAccount(sender)
 	if isContractSender {
 		if create {
-			nonce := env.StateDB.GetNonce(sender)
-			a.updateAndSetNonce(sender, nonce)
+			a.updateAndSetNonce(sender)
 		}
 	} else {
-		a.updateAndSetNonce(sender, env.StateDB.GetNonce(sender))
+		a.updateAndSetNonce(sender)
 	}
 }
 
@@ -126,58 +125,40 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 	case vm.SLOAD:
 		if stackLen >= 1 {
 			slot := common.Hash(stackData[stackLen-1].Bytes32())
-			value := env.StateDB.GetState(scope.Contract.Address(), slot)
 			storageKey := ToStorageKey(scope.Contract.Address(), slot)
-			a.ValidGet(storageKey)
-			a.UpdateReadSet(storageKey, value)
+			a.Get(storageKey)
 		}
 	case vm.SSTORE:
 		if stackLen >= 2 {
 			slot := common.Hash(stackData[stackLen-1].Bytes32())
 			value := stackData[stackLen-2].Bytes()
 			storageKey := ToStorageKey(scope.Contract.Address(), slot)
-			a.setValue(storageKey, common.BytesToHash(value))
+			a.Set(storageKey, common.BytesToHash(value))
 		}
 	case vm.EXTCODECOPY:
-		if stackLen >= 4 {
+		if stackLen >= 1 {
 			addr := common.Address(stackData[stackLen-1].Bytes20())
 			// Use codeHash instead of codeCopy
-			codeHash := env.StateDB.GetCodeHash(addr)
 			storageKey := ToStorageKey(addr, CodeCopyKey)
-			a.ValidGet(storageKey)
-			if _, ok := a.excl[addr]; !ok {
-				a.UpdateReadSet(storageKey, codeHash)
-			}
+			a.Get(storageKey)
 		}
 	case vm.EXTCODEHASH:
 		if stackLen >= 1 {
 			addr := common.Address(stackData[stackLen-1].Bytes20())
-			codeHash := env.StateDB.GetCodeHash(addr)
-			if _, ok := a.excl[addr]; !ok {
-				storageKey := ToStorageKey(addr, CodeHashKey)
-				a.ValidGet(storageKey)
-				a.UpdateReadSet(storageKey, codeHash)
-			}
+			storageKey := ToStorageKey(addr, CodeHashKey)
+			a.Get(storageKey)
 		}
 	case vm.EXTCODESIZE:
 		if stackLen >= 1 {
 			addr := common.Address(stackData[stackLen-1].Bytes20())
-			codeSize := env.StateDB.GetCodeSize(addr)
-			if _, ok := a.excl[addr]; !ok {
-				storageKey := ToStorageKey(addr, CodeSizeKey)
-				a.ValidGet(storageKey)
-				a.UpdateReadSet(storageKey, common.BigToHash(big.NewInt(int64(codeSize))))
-			}
+			storageKey := ToStorageKey(addr, CodeSizeKey)
+			a.Get(storageKey)
 		}
 	case vm.BALANCE:
 		if stackLen >= 1 {
 			addr := common.Address(stackData[stackLen-1].Bytes20())
-			balance := env.StateDB.GetBalance(addr)
-			if _, ok := a.excl[addr]; !ok {
-				storageKey := ToStorageKey(addr, BalanceKey)
-				a.ValidGet(storageKey)
-				a.UpdateReadSet(storageKey, common.BigToHash(balance))
-			}
+			storageKey := ToStorageKey(addr, BalanceKey)
+			a.Get(storageKey)
 		}
 	case vm.CALL, vm.CALLCODE:
 		if stackLen >= 1 {
@@ -185,8 +166,8 @@ func (a *AccessListTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, ga
 			toAddr := common.Address(stackData[stackLen-1].Bytes20())
 			value := scope.Contract.Value()
 			if value.Sign() > 0 && fromAddr != toAddr {
-				a.updateAndSetBalance(env.StateDB.GetBalance(fromAddr), fromAddr, value)
-				a.updateAndSetBalance(env.StateDB.GetBalance(toAddr), toAddr, new(big.Int).Neg(value))
+				a.updateAndSetBalance(fromAddr, value)
+				a.updateAndSetBalance(toAddr, new(big.Int).Neg(value))
 			}
 
 		}
@@ -267,13 +248,10 @@ func (a *AccessListTracer) CaptureTxEnd(restGas uint64) {
 	feeRatio, isRatioTx := a.msg.FeeRatio()
 	if isRatioTx {
 		feePayer, feeSender := types.CalcFeeWithRatio(feeRatio, remaining)
-		balanceOfFeePayer := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedFeePayer, BalanceKey)).Bytes())
-		a.updateAndSetBalance(balanceOfFeePayer, validatedFeePayer, new(big.Int).Neg(feePayer))
-		balanceOfSender := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedSender, BalanceKey)).Bytes())
-		a.updateAndSetBalance(balanceOfSender, validatedSender, new(big.Int).Neg(feeSender))
+		a.updateAndSetBalance(validatedFeePayer, new(big.Int).Neg(feePayer))
+		a.updateAndSetBalance(validatedSender, new(big.Int).Neg(feeSender))
 	} else {
-		balanceOfFeePayer := new(big.Int).SetBytes(a.Get(ToStorageKey(validatedFeePayer, BalanceKey)).Bytes())
-		a.updateAndSetBalance(balanceOfFeePayer, validatedFeePayer, new(big.Int).Neg(remaining))
+		a.updateAndSetBalance(validatedFeePayer, new(big.Int).Neg(remaining))
 	}
 }
 
@@ -420,39 +398,26 @@ func (a *AccessListTracer) WriteToMultiVersionStore() {
 	a.multiVersionStore.SetReadset(a.transactionIndex, a.readset)
 }
 
-func (a *AccessListTracer) updateBalance(addr common.Address, balance *big.Int) {
-	storageKey := ToStorageKey(addr, BalanceKey)
-	a.ValidGet(storageKey)
-	a.UpdateReadSet(storageKey, common.BigToHash(balance))
-}
-
-func (a *AccessListTracer) updateNonce(addr common.Address, nonce uint64) {
-	storageKey := ToStorageKey(addr, NonceKey)
-	a.ValidGet(storageKey)
-	a.UpdateReadSet(storageKey, common.BigToHash(big.NewInt(int64(nonce))))
-}
-
-func (a *AccessListTracer) handleRatioTransaction(balanceOfFeePayer, balanceOfSender *big.Int, feePayer, sender common.Address, feeRatio types.FeeRatio, gasFee *big.Int) {
+func (a *AccessListTracer) handleRatioTransaction(feePayer, sender common.Address, feeRatio types.FeeRatio, gasFee *big.Int) {
 	feePayerFee, senderFee := types.CalcFeeWithRatio(feeRatio, gasFee)
 
-	a.updateAndSetBalance(balanceOfFeePayer, feePayer, feePayerFee)
-	a.updateAndSetBalance(balanceOfSender, sender, senderFee)
+	a.updateAndSetBalance(feePayer, feePayerFee)
+	a.updateAndSetBalance(sender, senderFee)
 }
 
-func (a *AccessListTracer) handleRegularTransaction(balanceOfFeePayer *big.Int, feePayer common.Address, gasFee *big.Int) {
-	a.updateAndSetBalance(balanceOfFeePayer, feePayer, gasFee)
+func (a *AccessListTracer) handleRegularTransaction(feePayer common.Address, gasFee *big.Int) {
+	a.updateAndSetBalance(feePayer, gasFee)
 }
 
-func (a *AccessListTracer) updateAndSetBalance(balance *big.Int, address common.Address, value *big.Int) {
-	a.updateBalance(address, balance)
-
+func (a *AccessListTracer) updateAndSetBalance(address common.Address, value *big.Int) {
+	balance := hashToBig(a.Get(ToStorageKey(address, BalanceKey)))
 	newBalance := new(big.Int).Sub(balance, value)
-	a.setValue(ToStorageKey(address, BalanceKey), common.BigToHash(newBalance))
+	a.Set(ToStorageKey(address, BalanceKey), common.BigToHash(newBalance))
 }
 
-func (a *AccessListTracer) updateAndSetNonce(address common.Address, nonce uint64) {
-	a.updateNonce(address, nonce)
-	a.setValue(ToStorageKey(address, NonceKey), common.BigToHash(new(big.Int).SetUint64(nonce+1)))
+func (a *AccessListTracer) updateAndSetNonce(address common.Address) {
+	nonce := hashToBig(a.Get(ToStorageKey(address, NonceKey)))
+	a.Set(ToStorageKey(address, NonceKey), common.BigToHash(nonce.Add(nonce, big.NewInt(1))))
 }
 
 // getData returns a slice from the data based on the start and size and pads
@@ -467,4 +432,8 @@ func getData(data []byte, start uint64, size uint64) []byte {
 		end = length
 	}
 	return common.RightPadBytes(data[start:end], int(size))
+}
+
+func hashToBig(hash common.Hash) *big.Int {
+	return new(big.Int).SetBytes(hash.Bytes())
 }
