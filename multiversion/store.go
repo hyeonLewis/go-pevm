@@ -4,6 +4,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/state"
 	"github.com/kaiachain/kaia/common"
 )
@@ -22,6 +23,7 @@ type MultiVersionStore interface {
 	GetReadset(index int) ReadSet
 	ClearReadset(index int)
 	ValidateTransactionState(index int) (bool, []int)
+	VersionedIndexedStore(msg blockchain.Message, index int, incarnation int, abortChannel chan Abort) *AccessListTracer
 }
 
 type WriteSet map[StorageKey]common.Hash
@@ -50,6 +52,10 @@ func NewMultiVersionStore(parentStore *state.StateDB) *Store {
 		txIterateSets:   &sync.Map{},
 		parentStore:     parentStore,
 	}
+}
+
+func (s *Store) VersionedIndexedStore(msg blockchain.Message, index int, incarnation int, abortChannel chan Abort) *AccessListTracer {
+	return NewAccessListTracer(s, msg, index, incarnation, abortChannel)
 }
 
 func (s *Store) GetParentState() *state.StateDB {
