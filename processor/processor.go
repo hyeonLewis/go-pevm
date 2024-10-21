@@ -3,10 +3,12 @@ package processor
 import (
 	"errors"
 
+	"github.com/hyeonLewis/go-pevm/scheduler"
 	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/state"
 	"github.com/kaiachain/kaia/blockchain/types"
 	"github.com/kaiachain/kaia/blockchain/vm"
+	"github.com/kaiachain/kaia/params"
 )
 
 type Processor struct {
@@ -47,58 +49,43 @@ func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *t
 	}, nil
 }
 
-func (p *Processor) ProcessTx(txIndex int) (*Result, error) {
-	var (
-		usedGas = new(uint64)
-		tx      = p.txs[txIndex]
-	)
+func (p *Processor) Execute() []*scheduler.Response {
+	if len(p.txs) == 0 {
+		return nil
+	}
 
-	// Extract author from the header
-	author, _ := p.bc.Engine().Author(p.header) // Ignore error, we're past header validation
+	deliverTxEntries := make([]*scheduler.DeliverTxEntry, 0, len(p.txs))
+	for idx, tx := range p.txs {
+		deliverTxEntries = append(deliverTxEntries, &scheduler.DeliverTxEntry{Tx: tx, AbsoluteIndex: idx})
+	}
 
-	// Iterate over and process the individual transactions
-	p.state.SetTxContext(tx.Hash(), p.header.Hash(), txIndex)
-	receipt, trace, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
+	scheduler := scheduler.NewScheduler(p.state, p.bc.Config(), p.header, 1, p.deliverTx)
+	resp, err := scheduler.ProcessAll(deliverTxEntries)
 	if err != nil {
-		return nil, err
-	}
-	logs := receipt.Logs
-
-	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
-	if _, err := p.bc.Engine().Finalize(p.bc, p.header, p.state, []*types.Transaction{tx}, []*types.Receipt{receipt}); err != nil {
-		return nil, err
+		panic(err)
 	}
 
-	return &Result{Receipt: receipt, Logs: logs, UsedGas: *usedGas, Trace: trace}, nil
+	return resp
 }
 
-func (p *Processor) ProcessTxsSequentially() (types.Receipts, []*types.Log, uint64, []*vm.InternalTxTrace, error) {
-	var (
-		receipts         types.Receipts
-		usedGas          = new(uint64)
-		allLogs          []*types.Log
-		internalTxTraces []*vm.InternalTxTrace
-	)
+func (p *Processor) deliverTx(config *params.ChainConfig, header *types.Header, task *scheduler.DeliverTxTask) (*types.Receipt, *vm.InternalTxTrace, error) {
+	snap := task.State.Snapshot()
+	author, _ := p.bc.Engine().Author(header)
+	p.state.SetTxContext(task.Tx.Hash(), header.Hash(), task.AbsoluteIndex)
 
-	// Extract author from the header
-	author, _ := p.bc.Engine().Author(p.header) // Ignore error, we're past header validation
+	vmConfig := &vm.Config{
+		Debug:  true,
+		Tracer: task.VersionStores,
+	}
 
-	// Iterate over and process the individual transactions
-	for i, tx := range p.txs {
-		p.state.SetTxContext(tx.Hash(), p.header.Hash(), i)
-		receipt, trace, err := p.bc.ApplyTransaction(p.bc.Config(), &author, p.state, p.header, tx, usedGas, &p.vmConfig)
-		if err != nil {
-			return nil, nil, 0, nil, err
+	receipt, trace, err := p.bc.ApplyTransaction(config, &author, task.State, header, task.Tx, task.UsedGas, vmConfig)
+	if err != nil {
+		if err != vm.ErrTotalTimeLimitReached {
+			task.Tx.MarkUnexecutable(true)
 		}
-		receipts = append(receipts, receipt)
-		allLogs = append(allLogs, receipt.Logs...)
-		internalTxTraces = append(internalTxTraces, trace)
+		task.State.RevertToSnapshot(snap)
+		return nil, nil, err
 	}
 
-	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
-	if _, err := p.bc.Engine().Finalize(p.bc, p.header, p.state, p.txs, receipts); err != nil {
-		return nil, nil, 0, nil, err
-	}
-
-	return receipts, allLogs, *usedGas, internalTxTraces, nil
+	return receipt, trace, nil
 }

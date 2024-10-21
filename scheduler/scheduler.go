@@ -51,9 +51,9 @@ type DeliverTxBatchRequest struct {
 	TxEntries []*DeliverTxEntry
 }
 
-type deliverTxTask struct {
-	AbortCh chan multiversion.Abort
-
+type DeliverTxTask struct {
+	AbortCh       chan multiversion.Abort
+	State         *state.StateDB
 	mx            sync.RWMutex
 	Status        status
 	Dependencies  map[int]struct{}
@@ -68,7 +68,7 @@ type deliverTxTask struct {
 }
 
 // AppendDependencies appends the given indexes to the task's dependencies
-func (dt *deliverTxTask) AppendDependencies(deps []int) {
+func (dt *DeliverTxTask) AppendDependencies(deps []int) {
 	dt.mx.Lock()
 	defer dt.mx.Unlock()
 	for _, taskIdx := range deps {
@@ -76,27 +76,35 @@ func (dt *deliverTxTask) AppendDependencies(deps []int) {
 	}
 }
 
-func (dt *deliverTxTask) IsStatus(s status) bool {
+func (dt *DeliverTxTask) IsStatus(s status) bool {
 	dt.mx.RLock()
 	defer dt.mx.RUnlock()
 	return dt.Status == s
 }
 
-func (dt *deliverTxTask) SetStatus(s status) {
+func (dt *DeliverTxTask) SetStatus(s status) {
 	dt.mx.Lock()
 	defer dt.mx.Unlock()
 	dt.Status = s
 }
 
-func (dt *deliverTxTask) Reset() {
+func (dt *DeliverTxTask) IsValidated() bool {
+	dt.mx.RLock()
+	defer dt.mx.RUnlock()
+	// Consider unexecutable tx as validated
+	return dt.Status == statusValidated || dt.Tx.IsMarkedUnexecutable()
+}
+
+func (dt *DeliverTxTask) Reset() {
 	dt.SetStatus(statusPending)
 	dt.Response = nil
 	dt.Abort = nil
 	dt.AbortCh = nil
 	dt.VersionStores = nil
+	dt.UsedGas = new(uint64)
 }
 
-func (dt *deliverTxTask) Increment() {
+func (dt *DeliverTxTask) Increment() {
 	dt.Incarnation++
 }
 
@@ -106,11 +114,11 @@ type Scheduler interface {
 }
 
 type scheduler struct {
-	deliverTx          func(config *params.ChainConfig, state *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, vmConfig *vm.Config) (*types.Receipt, *vm.InternalTxTrace, error)
+	deliverTx          deliverTxFunc
 	workers            int
 	multiVersionStores multiversion.MultiVersionStore
-	allTasksMap        map[int]*deliverTxTask
-	allTasks           []*deliverTxTask
+	allTasksMap        map[int]*DeliverTxTask
+	allTasks           []*DeliverTxTask
 	executeCh          chan func()
 	validateCh         chan func()
 	synchronous        bool // true if maxIncarnation exceeds threshold
@@ -121,7 +129,7 @@ type scheduler struct {
 	header      *types.Header
 }
 
-type deliverTxFunc func(config *params.ChainConfig, state *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, vmConfig *vm.Config) (*types.Receipt, *vm.InternalTxTrace, error)
+type deliverTxFunc func(config *params.ChainConfig, header *types.Header, task *DeliverTxTask) (*types.Receipt, *vm.InternalTxTrace, error)
 
 // NewScheduler creates a new scheduler
 func NewScheduler(state *state.StateDB, chainConfig *params.ChainConfig, header *types.Header, workers int, deliverTxFunc deliverTxFunc) Scheduler {
@@ -134,7 +142,7 @@ func NewScheduler(state *state.StateDB, chainConfig *params.ChainConfig, header 
 	}
 }
 
-func (s *scheduler) collectResponses(tasks []*deliverTxTask) []*Response {
+func (s *scheduler) collectResponses(tasks []*DeliverTxTask) []*Response {
 	res := make([]*Response, 0, len(tasks))
 	for _, t := range tasks {
 		res = append(res, t.Response)
@@ -142,8 +150,7 @@ func (s *scheduler) collectResponses(tasks []*deliverTxTask) []*Response {
 	return res
 }
 
-func (s *scheduler) invalidateTask(task *deliverTxTask) {
-
+func (s *scheduler) invalidateTask(task *DeliverTxTask) {
 	s.multiVersionStores.InvalidateWriteset(task.AbsoluteIndex, task.Incarnation)
 	s.multiVersionStores.ClearReadset(task.AbsoluteIndex)
 }
@@ -179,7 +186,7 @@ func (s *scheduler) DoExecute(work func()) {
 	s.executeCh <- work
 }
 
-func (s *scheduler) findConflicts(task *deliverTxTask) (bool, []int) {
+func (s *scheduler) findConflicts(task *DeliverTxTask) (bool, []int) {
 	var conflicts []int
 	uniq := make(map[int]struct{})
 	valid := true
@@ -197,15 +204,16 @@ func (s *scheduler) findConflicts(task *deliverTxTask) (bool, []int) {
 	return valid, conflicts
 }
 
-func toTasks(reqs []*DeliverTxEntry) ([]*deliverTxTask, map[int]*deliverTxTask) {
-	tasksMap := make(map[int]*deliverTxTask)
-	allTasks := make([]*deliverTxTask, 0, len(reqs))
+func toTasks(reqs []*DeliverTxEntry) ([]*DeliverTxTask, map[int]*DeliverTxTask) {
+	tasksMap := make(map[int]*DeliverTxTask)
+	allTasks := make([]*DeliverTxTask, 0, len(reqs))
 	for _, r := range reqs {
-		task := &deliverTxTask{
+		task := &DeliverTxTask{
 			Tx:            r.Tx,
 			AbsoluteIndex: r.AbsoluteIndex,
 			Status:        statusPending,
 			Dependencies:  map[int]struct{}{},
+			UsedGas:       new(uint64),
 		}
 
 		tasksMap[r.AbsoluteIndex] = task
@@ -222,19 +230,19 @@ func (s *scheduler) initMultiVersionStores() {
 	s.multiVersionStores = mvs
 }
 
-func dependenciesValidated(tasksMap map[int]*deliverTxTask, deps map[int]struct{}) bool {
+func dependenciesValidated(tasksMap map[int]*DeliverTxTask, deps map[int]struct{}) bool {
 	for i := range deps {
 		// because idx contains absoluteIndices, we need to fetch from map
 		task := tasksMap[i]
-		if !task.IsStatus(statusValidated) {
+		if !task.IsValidated() {
 			return false
 		}
 	}
 	return true
 }
 
-func filterTasks(tasks []*deliverTxTask, filter func(*deliverTxTask) bool) []*deliverTxTask {
-	var res []*deliverTxTask
+func filterTasks(tasks []*DeliverTxTask, filter func(*DeliverTxTask) bool) []*DeliverTxTask {
+	var res []*DeliverTxTask
 	for _, t := range tasks {
 		if filter(t) {
 			res = append(res, t)
@@ -243,9 +251,9 @@ func filterTasks(tasks []*deliverTxTask, filter func(*deliverTxTask) bool) []*de
 	return res
 }
 
-func allValidated(tasks []*deliverTxTask) bool {
+func allValidated(tasks []*DeliverTxTask) bool {
 	for _, t := range tasks {
-		if !t.IsStatus(statusValidated) {
+		if !t.IsValidated() {
 			return false
 		}
 	}
@@ -311,7 +319,11 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	return s.collectResponses(tasks), nil
 }
 
-func (s *scheduler) shouldRerun(task *deliverTxTask) bool {
+func (s *scheduler) shouldRerun(task *DeliverTxTask) bool {
+	if task.Tx.IsMarkedUnexecutable() {
+		return false
+	}
+
 	switch task.Status {
 
 	case statusAborted, statusPending:
@@ -349,7 +361,7 @@ func (s *scheduler) shouldRerun(task *deliverTxTask) bool {
 	panic("unexpected status: " + task.Status)
 }
 
-func (s *scheduler) validateTask(task *deliverTxTask) bool {
+func (s *scheduler) validateTask(task *DeliverTxTask) bool {
 	if s.shouldRerun(task) {
 		return false
 	}
@@ -358,16 +370,16 @@ func (s *scheduler) validateTask(task *deliverTxTask) bool {
 
 func (s *scheduler) findFirstNonValidated() (int, bool) {
 	for i, t := range s.allTasks {
-		if t.Status != statusValidated {
+		if !t.IsValidated() {
 			return i, true
 		}
 	}
 	return 0, false
 }
 
-func (s *scheduler) validateAll(tasks []*deliverTxTask) ([]*deliverTxTask, error) {
+func (s *scheduler) validateAll(tasks []*DeliverTxTask) ([]*DeliverTxTask, error) {
 	var mx sync.Mutex
-	var res []*deliverTxTask
+	var res []*DeliverTxTask
 
 	startIdx, anyLeft := s.findFirstNonValidated()
 
@@ -399,7 +411,7 @@ func (s *scheduler) validateAll(tasks []*deliverTxTask) ([]*deliverTxTask, error
 	return res, nil
 }
 
-func (s *scheduler) executeAll(tasks []*deliverTxTask) error {
+func (s *scheduler) executeAll(tasks []*DeliverTxTask) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -420,12 +432,12 @@ func (s *scheduler) executeAll(tasks []*deliverTxTask) error {
 	return nil
 }
 
-func (s *scheduler) prepareAndRunTask(wg *sync.WaitGroup, task *deliverTxTask) {
+func (s *scheduler) prepareAndRunTask(wg *sync.WaitGroup, task *DeliverTxTask) {
 	s.executeTask(task)
 	wg.Done()
 }
 
-func (s *scheduler) prepareTask(task *deliverTxTask) {
+func (s *scheduler) prepareTask(task *DeliverTxTask) {
 	abortCh := make(chan multiversion.Abort, 1)
 
 	msg, err := task.Tx.AsMessageWithAccountKeyPicker(types.MakeSigner(s.chainConfig, s.header.Number), s.state, s.header.Number.Uint64())
@@ -438,13 +450,16 @@ func (s *scheduler) prepareTask(task *deliverTxTask) {
 	task.AbortCh = abortCh
 }
 
-func (s *scheduler) executeTask(task *deliverTxTask) {
+func (s *scheduler) executeTask(task *DeliverTxTask) {
+	if task.Tx.IsMarkedUnexecutable() {
+		return
+	}
 	// in the synchronous case, we only want to re-execute tasks that need re-executing
 	if s.synchronous {
 		// if already validated, then this does another validation
-		if task.IsStatus(statusValidated) {
+		if task.IsValidated() {
 			s.shouldRerun(task)
-			if task.IsStatus(statusValidated) {
+			if task.IsValidated() {
 				return
 			}
 		}
@@ -459,16 +474,16 @@ func (s *scheduler) executeTask(task *deliverTxTask) {
 
 	s.prepareTask(task)
 
-	vmConfig := &vm.Config{
-		Debug:  true,
-		Tracer: task.VersionStores,
+	if task.State == nil {
+		task.State = s.state.Copy()
 	}
 
-	copiedState := s.state.Copy()
-	receipt, trace, err := s.deliverTx(s.chainConfig, copiedState, s.header, task.Tx, task.UsedGas, vmConfig)
-	if err != nil {
-		panic(err)
+	receipt, trace, _ := s.deliverTx(s.chainConfig, s.header, task)
+	// if the tx is unexecutable, then we don't need to continue
+	if task.Tx.IsMarkedUnexecutable() {
+		return
 	}
+
 	// close the abort channel
 	close(task.AbortCh)
 	abort, ok := <-task.AbortCh
@@ -479,6 +494,8 @@ func (s *scheduler) executeTask(task *deliverTxTask) {
 		task.AppendDependencies([]int{abort.DependentTxIdx})
 		// write from version store to multiversion stores
 		task.VersionStores.WriteEstimatesToMultiVersionStore()
+
+		return
 	}
 
 	resp := &Response{
