@@ -16,7 +16,6 @@ type Processor struct {
 	bc       *blockchain.BlockChain
 	header   *types.Header
 	state    *state.StateDB
-	vmConfig vm.Config
 }
 
 type Result struct {
@@ -28,16 +27,9 @@ type Result struct {
 
 var ErrNilArgument = errors.New("nil argument")
 
-func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *types.Header, vmConfig vm.Config) (*Processor, error) {
+func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *types.Header, state *state.StateDB) (*Processor, error) {
 	if txs == nil || bc == nil || header == nil {
 		return nil, ErrNilArgument
-	}
-	// In actual blockchain, it processes txs in header, so we need to get the state of the parent block.
-	// But in simulation, we assume that transactions are executed for a next block,
-	// so we use the state of the current block.
-	state, err := bc.StateAt(header.Root)
-	if err != nil {
-		return nil, err
 	}
 
 	return &Processor{
@@ -45,7 +37,6 @@ func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *t
 		bc:       bc,
 		header:   header,
 		state:    state,
-		vmConfig: vmConfig,
 	}, nil
 }
 
