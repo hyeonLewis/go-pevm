@@ -15,6 +15,7 @@ type MultiVersionStore interface {
 	GetParentState() *state.StateDB
 	Has(index int, key StorageKey) bool
 	WriteLatestToStore(state *state.StateDB)
+	WriteLatestToStoreUntil(index int, state *state.StateDB)
 	SetWriteset(index int, incarnation int, writeset WriteSet)
 	InvalidateWriteset(index int, incarnation int)
 	SetEstimatedWriteset(index int, incarnation int, writeset WriteSet)
@@ -283,6 +284,49 @@ func (s *Store) ValidateTransactionState(index int) (bool, []int) {
 	return readsetValid, conflictIndices
 }
 
+func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
+	// sort the keys
+	keys := []StorageKey{}
+	s.multiVersionMap.Range(func(key, value interface{}) bool {
+		keys = append(keys, key.(StorageKey))
+		return true
+	})
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].String() < keys[j].String()
+	})
+
+	for _, key := range keys {
+		val, ok := s.multiVersionMap.Load(key)
+		if !ok {
+			continue
+		}
+		mvValue, found := val.(MultiVersionValue).GetLatestNonEstimate()
+		if !found {
+			// this means that at some point, there was an estimate, but we have since removed it so there isn't anything writeable at the key, so we can skip
+			continue
+		}
+		// we shouldn't have any ESTIMATE values when performing the write, because we read the latest non-estimate values only
+		if mvValue.IsEstimate() {
+			panic("should not have any estimate values when writing to parent store")
+		}
+		if mvValue.Index() >= index {
+			continue
+		}
+		// if the value is deleted, then delete it from the parent store
+		if mvValue.IsDeleted() {
+			// We use []byte(key) instead of conv.UnsafeStrToBytes because we cannot
+			// be sure if the underlying store might do a save with the byteslice or
+			// not. Once we get confirmation that .Delete is guaranteed not to
+			// save the byteslice, then we can assume only a read-only copy is sufficient.
+			finalState.SetState(key.Address(), key.Slot(), common.Hash{})
+			continue
+		}
+		if mvValue.Value() != (common.Hash{}) {
+			key.SetValue(finalState, mvValue.Value())
+		}
+	}
+}
+
 func (s *Store) WriteLatestToStore(finalState *state.StateDB) {
 	// sort the keys
 	keys := []StorageKey{}
@@ -318,7 +362,7 @@ func (s *Store) WriteLatestToStore(finalState *state.StateDB) {
 			continue
 		}
 		if mvValue.Value() != (common.Hash{}) {
-			finalState.SetState(key.Address(), key.Slot(), mvValue.Value())
+			key.SetValue(finalState, mvValue.Value())
 		}
 	}
 }

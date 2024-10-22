@@ -91,8 +91,7 @@ func (dt *DeliverTxTask) SetStatus(s status) {
 func (dt *DeliverTxTask) IsValidated() bool {
 	dt.mx.RLock()
 	defer dt.mx.RUnlock()
-	// Consider unexecutable tx as validated
-	return dt.Status == statusValidated || dt.Tx.IsMarkedUnexecutable()
+	return dt.Status == statusValidated
 }
 
 func (dt *DeliverTxTask) Reset() {
@@ -289,14 +288,18 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	toExecute := tasks
 	for !allValidated(tasks) {
 		// if the max incarnation >= x, we should revert to synchronous
+		startIdx, anyLeft := s.findFirstNonValidated()
 		if iterations >= maximumIterations {
 			// process synchronously
 			s.synchronous = true
-			startIdx, anyLeft := s.findFirstNonValidated()
 			if !anyLeft {
 				break
 			}
 			toExecute = tasks[startIdx:]
+		}
+
+		if startIdx > 0 {
+			s.multiVersionStores.WriteLatestToStoreUntil(startIdx, s.state)
 		}
 
 		// execute sets statuses of tasks to either executed or aborted
@@ -320,10 +323,6 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 }
 
 func (s *scheduler) shouldRerun(task *DeliverTxTask) bool {
-	if task.Tx.IsMarkedUnexecutable() {
-		return false
-	}
-
 	switch task.Status {
 
 	case statusAborted, statusPending:
@@ -440,20 +439,13 @@ func (s *scheduler) prepareAndRunTask(wg *sync.WaitGroup, task *DeliverTxTask) {
 func (s *scheduler) prepareTask(task *DeliverTxTask) {
 	abortCh := make(chan multiversion.Abort, 1)
 
-	msg, err := task.Tx.AsMessageWithAccountKeyPicker(types.MakeSigner(s.chainConfig, s.header.Number), s.state, s.header.Number.Uint64())
-	if err != nil {
-		panic(err)
-	}
-	vs := s.multiVersionStores.VersionedIndexedStore(msg, task.AbsoluteIndex, task.Incarnation, abortCh)
+	vs := s.multiVersionStores.VersionedIndexedStore(task.Tx, task.AbsoluteIndex, task.Incarnation, abortCh)
 	task.VersionStores = vs
 
 	task.AbortCh = abortCh
 }
 
 func (s *scheduler) executeTask(task *DeliverTxTask) {
-	if task.Tx.IsMarkedUnexecutable() {
-		return
-	}
 	// in the synchronous case, we only want to re-execute tasks that need re-executing
 	if s.synchronous {
 		// if already validated, then this does another validation
@@ -474,13 +466,11 @@ func (s *scheduler) executeTask(task *DeliverTxTask) {
 
 	s.prepareTask(task)
 
-	if task.State == nil {
-		task.State = s.state.Copy()
-	}
+	task.State = s.state.Copy()
 
-	receipt, trace, _ := s.deliverTx(s.chainConfig, s.header, task)
-	// if the tx is unexecutable, then we don't need to continue
-	if task.Tx.IsMarkedUnexecutable() {
+	receipt, trace, err := s.deliverTx(s.chainConfig, s.header, task)
+	// TODO-kaia: Better error handling
+	if err != nil {
 		return
 	}
 

@@ -69,3 +69,14 @@ func (k StorageKey) GetValue(stateDB *state.StateDB) common.Hash {
 		return stateDB.GetState(k.Address(), k.Slot())
 	}
 }
+
+func (k StorageKey) SetValue(stateDB *state.StateDB, value common.Hash) {
+	switch k.Slot() {
+	case BalanceKey:
+		stateDB.SetBalance(k.Address(), new(big.Int).SetBytes(value.Bytes()))
+	case NonceKey:
+		stateDB.SetNonce(k.Address(), uint64(value.Big().Int64()))
+	default:
+		stateDB.SetState(k.Address(), k.Slot(), value)
+	}
+}

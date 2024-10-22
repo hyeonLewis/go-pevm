@@ -113,6 +113,10 @@ func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to com
 	} else {
 		a.updateAndSetNonce(sender)
 	}
+
+	// Initial value transfer
+	a.updateAndSetBalance(from, value)
+	a.updateAndSetBalance(to, new(big.Int).Neg(value))
 }
 
 // CaptureState captures all opcodes that touch storage or addresses and adds them to the accesslist.

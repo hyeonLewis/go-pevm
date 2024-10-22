@@ -12,10 +12,11 @@ import (
 )
 
 type Processor struct {
-	txs      []*types.Transaction
-	bc       *blockchain.BlockChain
-	header   *types.Header
-	state    *state.StateDB
+	txs     []*types.Transaction
+	bc      *blockchain.BlockChain
+	header  *types.Header
+	state   *state.StateDB
+	workers int
 }
 
 type Result struct {
@@ -27,16 +28,17 @@ type Result struct {
 
 var ErrNilArgument = errors.New("nil argument")
 
-func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *types.Header, state *state.StateDB) (*Processor, error) {
+func NewProcessor(txs []*types.Transaction, bc *blockchain.BlockChain, header *types.Header, state *state.StateDB, workers int) (*Processor, error) {
 	if txs == nil || bc == nil || header == nil {
 		return nil, ErrNilArgument
 	}
 
 	return &Processor{
-		txs:      txs,
-		bc:       bc,
-		header:   header,
-		state:    state,
+		txs:     txs,
+		bc:      bc,
+		header:  header,
+		state:   state,
+		workers: workers,
 	}, nil
 }
 
@@ -50,7 +52,8 @@ func (p *Processor) Execute() []*scheduler.Response {
 		deliverTxEntries = append(deliverTxEntries, &scheduler.DeliverTxEntry{Tx: tx, AbsoluteIndex: idx})
 	}
 
-	scheduler := scheduler.NewScheduler(p.state, p.bc.Config(), p.header, 1, p.deliverTx)
+	// If workers is set to 0, it will create goroutines equal to the number of txs by default
+	scheduler := scheduler.NewScheduler(p.state, p.bc.Config(), p.header, p.workers, p.deliverTx)
 	resp, err := scheduler.ProcessAll(deliverTxEntries)
 	if err != nil {
 		panic(err)
@@ -71,9 +74,6 @@ func (p *Processor) deliverTx(config *params.ChainConfig, header *types.Header, 
 
 	receipt, trace, err := p.bc.ApplyTransaction(config, &author, task.State, header, task.Tx, task.UsedGas, vmConfig)
 	if err != nil {
-		if err != vm.ErrTotalTimeLimitReached {
-			task.Tx.MarkUnexecutable(true)
-		}
 		task.State.RevertToSnapshot(snap)
 		return nil, nil, err
 	}
