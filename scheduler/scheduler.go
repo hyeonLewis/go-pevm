@@ -296,6 +296,9 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 				break
 			}
 			toExecute = tasks[startIdx:]
+			// TODO-kaia: Re-evaluate if we can use this to avoid validation
+			s.processAllSync(toExecute)
+			break
 		}
 
 		if startIdx > 0 {
@@ -320,6 +323,13 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	s.multiVersionStores.WriteLatestToStore(s.state)
 
 	return s.collectResponses(tasks), nil
+}
+
+func (s *scheduler) processAllSync(tasks []*DeliverTxTask) {
+	for _, task := range tasks {
+		s.multiVersionStores.WriteLatestToStoreUntil(task.AbsoluteIndex, s.state)
+		s.executeTask(task)
+	}
 }
 
 func (s *scheduler) shouldRerun(task *DeliverTxTask) bool {

@@ -113,7 +113,7 @@ func TestValueTransferMultipleTxs(t *testing.T) {
 	state, _ := bc.State()
 	stateCopy := state.Copy()
 	value := big.NewInt(10000)
-	txs, err := prepareSimpleValueTransferTx(bc, value, 3)
+	txs, err := prepareSimpleValueTransferTx(bc, value, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +132,12 @@ func TestValueTransferMultipleTxs(t *testing.T) {
 	root := state.IntermediateRoot(false)
 
 	assert.Equal(t, root, rootSequential)
-	assert.Equal(t, len(resp), 3)
+	assert.Equal(t, len(resp), 50)
 	for _, r := range resp {
 		assert.Equal(t, r.Receipt.Status, uint(1))
 	}
-	assert.Equal(t, state.GetBalance(constants.RandomAddress), new(big.Int).Mul(value, big.NewInt(3)))
-	assert.Equal(t, state.GetNonce(constants.ValidatorAddress), uint64(3))
+	assert.Equal(t, state.GetBalance(constants.RandomAddress), new(big.Int).Mul(value, big.NewInt(50)))
+	assert.Equal(t, state.GetNonce(constants.ValidatorAddress), uint64(50))
 }
 
 func TestValueTransferMultipleTxsConcurrent(t *testing.T) {
@@ -145,7 +145,7 @@ func TestValueTransferMultipleTxsConcurrent(t *testing.T) {
 	header := bc.CurrentHeader()
 
 	value := big.NewInt(10000)
-	txs, senders, receivers, err := prepareValueTransferTxWithSender(bc, value, 10)
+	txs, senders, receivers, err := prepareValueTransferTxWithSender(bc, value, 50)
 	state, _ := bc.State()
 	for _, sender := range senders {
 		state.SetBalance(sender, big.NewInt(1000000000000000000))
@@ -168,7 +168,7 @@ func TestValueTransferMultipleTxsConcurrent(t *testing.T) {
 	root := state.IntermediateRoot(false)
 
 	assert.Equal(t, root, rootSequential)
-	assert.Equal(t, len(resp), 10)
+	assert.Equal(t, len(resp), 50)
 	for _, r := range resp {
 		assert.Equal(t, r.Receipt.Status, uint(1))
 	}
@@ -187,12 +187,15 @@ const (
 	numTxs         = 50
 )
 
+// Before avoiding validation:
 // 1000000000	         0.01709 ns/op	       0 B/op	       0 allocs/op
+// After avoiding validation:
+// 1000000000	         0.007191 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkDependentValueTransferTxsConcurrent(b *testing.B) {
 	benchmarkDependentValueTransferTxsConcurrent(b, defaultWorkers)
 }
 
-// 1000000000	         0.007298 ns/op	       0 B/op	       0 allocs/op
+// 1000000000	         0.006375 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkDependentValueTransferTxsSequential(b *testing.B) {
 	benchmarkDependentValueTransferTxsSequential(b)
 }
