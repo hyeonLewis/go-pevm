@@ -50,9 +50,8 @@ func NewMultiVersionItem() *multiVersionItem {
 // GetLatest returns the latest written value to the btree, and returns a boolean indicating whether it was found.
 func (item *multiVersionItem) GetLatest() (MultiVersionValueItem, bool) {
 	item.mtx.RLock()
-	defer item.mtx.RUnlock()
-
 	bTreeItem := item.valueTree.Max()
+	item.mtx.RUnlock()
 	if bTreeItem == nil {
 		return nil, false
 	}
@@ -109,18 +108,18 @@ func (item *multiVersionItem) Set(index int, incarnation int, value common.Hash)
 	if value == (common.Hash{}) {
 		return
 	}
-	item.mtx.Lock()
-	defer item.mtx.Unlock()
 
 	valueItem := NewValueItem(index, incarnation, value)
+	item.mtx.Lock()
+	defer item.mtx.Unlock()
 	item.valueTree.ReplaceOrInsert(valueItem)
 }
 
 func (item *multiVersionItem) Delete(index int, incarnation int) {
+	deletedItem := NewDeletedItem(index, incarnation)
+
 	item.mtx.Lock()
 	defer item.mtx.Unlock()
-
-	deletedItem := NewDeletedItem(index, incarnation)
 	item.valueTree.ReplaceOrInsert(deletedItem)
 }
 
@@ -132,10 +131,10 @@ func (item *multiVersionItem) Remove(index int) {
 }
 
 func (item *multiVersionItem) SetEstimate(index int, incarnation int) {
+	estimateItem := NewEstimateItem(index, incarnation)
+	
 	item.mtx.Lock()
 	defer item.mtx.Unlock()
-
-	estimateItem := NewEstimateItem(index, incarnation)
 	item.valueTree.ReplaceOrInsert(estimateItem)
 }
 

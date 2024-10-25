@@ -61,7 +61,7 @@ func prepareValueTransferTxWithSender(bc *blockchain.BlockChain, value *big.Int,
 	return txs, senderAddrs, receiverAddrs, nil
 }
 
-func executeTxsSequential(txs []*types.Transaction, bc *blockchain.BlockChain, state *state.StateDB, value *big.Int) (common.Hash, error) {
+func executeTxsSequential(txs []*types.Transaction, bc *blockchain.BlockChain, state *state.StateDB) (common.Hash, error) {
 	executor := chain.NewExecutor(bc.Config(), state, types.CopyHeader(bc.CurrentHeader()))
 	for i, tx := range txs {
 		state.SetTxContext(tx.Hash(), common.Hash{}, i)
@@ -92,7 +92,7 @@ func TestValueTransferSingleTx(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy, value)
+	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestValueTransferSingleTx(t *testing.T) {
 	assert.Equal(t, state.GetNonce(constants.ValidatorAddress), uint64(1))
 }
 
-func TestValueTransferMultipleTxs(t *testing.T) {
+func TestDependentValueTransferMultipleTxs(t *testing.T) {
 	bc := prepareChain()
 	header := bc.CurrentHeader()
 
@@ -124,7 +124,7 @@ func TestValueTransferMultipleTxs(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy, value)
+	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestValueTransferMultipleTxsConcurrent(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy, value)
+	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +200,17 @@ func BenchmarkDependentValueTransferTxsSequential(b *testing.B) {
 	benchmarkDependentValueTransferTxsSequential(b)
 }
 
+// 1000000000	         0.008027 ns/op	       0 B/op	       0 allocs/op
+func BenchmarkValueTransferMultipleTxsConcurrent(b *testing.B) {
+	benchmarkValueTransferMultipleTxsConcurrent(b, defaultWorkers)
+}
+
+// 1000000000	         0.01039 ns/op	       0 B/op	       0 allocs/op
+func BenchmarkValueTransferMultipleTxsSequential(b *testing.B) {
+	benchmarkValueTransferMultipleTxsSequential(b)
+}
+
+
 func benchmarkDependentValueTransferTxsConcurrent(b *testing.B, workers int) {
 	bc := prepareChain()
 	header := bc.CurrentHeader()
@@ -225,17 +236,7 @@ func benchmarkDependentValueTransferTxsSequential(b *testing.B) {
 	value := big.NewInt(10000)
 	txs, _ := prepareSimpleValueTransferTx(bc, value, 50)
 
-	executeTxsSequential(txs, bc, state, value)
-}
-
-// 1000000000	         0.008027 ns/op	       0 B/op	       0 allocs/op
-func BenchmarkValueTransferMultipleTxsConcurrent(b *testing.B) {
-	benchmarkValueTransferMultipleTxsConcurrent(b, defaultWorkers)
-}
-
-// 1000000000	         0.01039 ns/op	       0 B/op	       0 allocs/op
-func BenchmarkValueTransferMultipleTxsSequential(b *testing.B) {
-	benchmarkValueTransferMultipleTxsSequential(b)
+	executeTxsSequential(txs, bc, state)
 }
 
 func benchmarkValueTransferMultipleTxsConcurrent(b *testing.B, workers int) {
@@ -267,5 +268,5 @@ func benchmarkValueTransferMultipleTxsSequential(b *testing.B) {
 		state.SetBalance(sender, big.NewInt(1000000000000000000))
 	}
 
-	executeTxsSequential(txs, bc, state, value)
+	executeTxsSequential(txs, bc, state)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hyeonLewis/go-pevm/multiversion"
 	"github.com/kaiachain/kaia/blockchain/state"
@@ -15,23 +16,31 @@ import (
 
 var logger = log.NewModuleLogger(60)
 
-type status string
+type status int32
 
 const (
 	// statusPending tasks are ready for execution
 	// all executing tasks are in pending state
-	statusPending status = "pending"
+	statusPending status = iota
 	// statusExecuted tasks are ready for validation
 	// these tasks did not abort during execution
-	statusExecuted status = "executed"
+	statusExecuted
 	// statusAborted means the task has been aborted
 	// these tasks transition to pending upon next execution
-	statusAborted status = "aborted"
+	statusAborted
 	// statusValidated means the task has been validated
 	// tasks in this status can be reset if an earlier task fails validation
-	statusValidated status = "validated"
+	statusValidated
 	// statusWaiting tasks are waiting for another tx to complete
-	statusWaiting status = "waiting"
+	statusWaiting
+)
+
+func (s status) String() string {
+	return []string{"pending", "executed", "aborted", "validated", "waiting"}[s]
+}
+
+
+const (
 	// maximumIterations before we revert to sequential (for high conflict rates)
 	maximumIterations = 10
 )
@@ -55,7 +64,7 @@ type DeliverTxTask struct {
 	AbortCh       chan multiversion.Abort
 	State         *state.StateDB
 	mx            sync.RWMutex
-	Status        status
+	Status        atomic.Int32
 	Dependencies  map[int]struct{}
 	Abort         *multiversion.Abort
 	Incarnation   int
@@ -77,21 +86,15 @@ func (dt *DeliverTxTask) AppendDependencies(deps []int) {
 }
 
 func (dt *DeliverTxTask) IsStatus(s status) bool {
-	dt.mx.RLock()
-	defer dt.mx.RUnlock()
-	return dt.Status == s
+	return dt.Status.Load() == int32(s)
 }
 
 func (dt *DeliverTxTask) SetStatus(s status) {
-	dt.mx.Lock()
-	defer dt.mx.Unlock()
-	dt.Status = s
+	dt.Status.Store(int32(s))
 }
 
 func (dt *DeliverTxTask) IsValidated() bool {
-	dt.mx.RLock()
-	defer dt.mx.RUnlock()
-	return dt.Status == statusValidated
+	return dt.Status.Load() == int32(statusValidated)
 }
 
 func (dt *DeliverTxTask) Reset() {
@@ -121,7 +124,7 @@ type scheduler struct {
 	executeCh          chan func()
 	validateCh         chan func()
 	synchronous        bool // true if maxIncarnation exceeds threshold
-	maxIncarnation     int  // current highest incarnation
+	maxIncarnation     atomic.Int32  // current highest incarnation
 
 	state       *state.StateDB
 	chainConfig *params.ChainConfig
@@ -210,11 +213,11 @@ func toTasks(reqs []*DeliverTxEntry) ([]*DeliverTxTask, map[int]*DeliverTxTask) 
 		task := &DeliverTxTask{
 			Tx:            r.Tx,
 			AbsoluteIndex: r.AbsoluteIndex,
-			Status:        statusPending,
+			Status:        atomic.Int32{},
 			Dependencies:  map[int]struct{}{},
 			UsedGas:       new(uint64),
 		}
-
+		task.Status.Store(int32(statusPending))
 		tasksMap[r.AbsoluteIndex] = task
 		allTasks = append(allTasks, task)
 	}
@@ -286,6 +289,8 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	start(workerCtx, s.validateCh, len(tasks))
 
 	toExecute := tasks
+
+	lastStoreIdx := 0
 	for !allValidated(tasks) {
 		// if the max incarnation >= x, we should revert to synchronous
 		startIdx, anyLeft := s.findFirstNonValidated()
@@ -301,8 +306,9 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 			break
 		}
 
-		if startIdx > 0 {
+		if startIdx > lastStoreIdx {
 			s.multiVersionStores.WriteLatestToStoreUntil(startIdx, s.state)
+			lastStoreIdx = startIdx
 		}
 
 		// execute sets statuses of tasks to either executed or aborted
@@ -333,7 +339,7 @@ func (s *scheduler) processAllSync(tasks []*DeliverTxTask) {
 }
 
 func (s *scheduler) shouldRerun(task *DeliverTxTask) bool {
-	switch task.Status {
+	switch status(task.Status.Load()) {
 
 	case statusAborted, statusPending:
 		return true
@@ -367,7 +373,7 @@ func (s *scheduler) shouldRerun(task *DeliverTxTask) bool {
 		// if conflicts are done, then this task is ready to run again
 		return dependenciesValidated(s.allTasksMap, task.Dependencies)
 	}
-	panic("unexpected status: " + task.Status)
+	panic("unexpected status: " + status(task.Status.Load()).String())
 }
 
 func (s *scheduler) validateTask(task *DeliverTxTask) bool {
@@ -387,8 +393,7 @@ func (s *scheduler) findFirstNonValidated() (int, bool) {
 }
 
 func (s *scheduler) validateAll(tasks []*DeliverTxTask) ([]*DeliverTxTask, error) {
-	var mx sync.Mutex
-	var res []*DeliverTxTask
+	resChan := make(chan *DeliverTxTask, len(tasks))
 
 	startIdx, anyLeft := s.findFirstNonValidated()
 
@@ -403,19 +408,25 @@ func (s *scheduler) validateAll(tasks []*DeliverTxTask) ([]*DeliverTxTask, error
 		s.DoValidate(func() {
 			defer wg.Done()
 			if !s.validateTask(t) {
-				mx.Lock()
-				defer mx.Unlock()
 				t.Reset()
 				t.Increment()
 				// update max incarnation for scheduler
-				if t.Incarnation > s.maxIncarnation {
-					s.maxIncarnation = t.Incarnation
+				if t.Incarnation > int(s.maxIncarnation.Load()) {
+					s.maxIncarnation.Store(int32(t.Incarnation))
 				}
-				res = append(res, t)
+				resChan <- t
 			}
 		})
 	}
-	wg.Wait()
+	go func() {
+        wg.Wait()
+        close(resChan)
+    }()
+
+    var res []*DeliverTxTask
+    for t := range resChan {
+        res = append(res, t)
+    }
 
 	return res, nil
 }
