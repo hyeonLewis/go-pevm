@@ -318,7 +318,7 @@ func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
 			// be sure if the underlying store might do a save with the byteslice or
 			// not. Once we get confirmation that .Delete is guaranteed not to
 			// save the byteslice, then we can assume only a read-only copy is sufficient.
-			finalState.SetState(key.Address(), key.Slot(), common.Hash{})
+			key.SetValue(finalState, common.Hash{})
 			continue
 		}
 		if mvValue.Value() != (common.Hash{}) {
@@ -358,7 +358,7 @@ func (s *Store) WriteLatestToStore(finalState *state.StateDB) {
 			// be sure if the underlying store might do a save with the byteslice or
 			// not. Once we get confirmation that .Delete is guaranteed not to
 			// save the byteslice, then we can assume only a read-only copy is sufficient.
-			finalState.SetState(key.Address(), key.Slot(), common.Hash{})
+			key.SetValue(finalState, common.Hash{})
 			continue
 		}
 		if mvValue.Value() != (common.Hash{}) {
