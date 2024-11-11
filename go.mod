@@ -15,7 +15,6 @@ require (
 	github.com/dgraph-io/badger v1.6.0 // indirect
 	github.com/edsrzf/mmap-go v1.0.0 // indirect
 	github.com/ethereum/c-kzg-4844 v0.4.0 // indirect
-	github.com/fjl/memsize v0.0.0-20190710130421-bcb5799ab5e5 // indirect
 	github.com/go-redis/redis/v7 v7.4.0 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
@@ -55,14 +54,6 @@ require (
 )
 
 require github.com/stretchr/testify v1.9.0
-
-require (
-	github.com/cespare/xxhash v1.1.0 // indirect
-	github.com/cosmos/gorocksdb v1.2.0 // indirect
-	github.com/dgraph-io/badger/v2 v2.2007.2 // indirect
-	github.com/jmhodges/levigo v1.0.0 // indirect
-	go.etcd.io/bbolt v1.3.6 // indirect
-)
 
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9 // indirect
@@ -110,7 +101,6 @@ require (
 	github.com/prometheus/procfs v0.7.3 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/tendermint/tm-db v0.6.7
 	github.com/tinylib/msgp v1.1.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/wealdtech/go-eth2-wallet-encryptor-keystorev4 v1.4.1 // indirect
@@ -134,3 +124,5 @@ require (
 	inet.af/netaddr v0.0.0-20220617031823-097006376321 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
+
+replace github.com/kaiachain/kaia => github.com/hyeonLewis/kaia v0.0.0-20241108055044-8c027bab72b2
