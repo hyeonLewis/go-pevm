@@ -125,4 +125,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/kaiachain/kaia => github.com/hyeonLewis/kaia v0.0.0-20241108055044-8c027bab72b2
+replace github.com/kaiachain/kaia => ../kaia

@@ -201,7 +201,6 @@ func (s *scheduler) findConflicts(task *DeliverTxTask) (bool, []int) {
 	}
 	// any non-ok value makes valid false
 	valid = valid && ok
-
 	sort.Ints(conflicts)
 	return valid, conflicts
 }
@@ -289,7 +288,7 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	start(workerCtx, s.validateCh, len(tasks))
 
 	toExecute := tasks
-
+	
 	lastStoreIdx := 0
 	for !allValidated(tasks) {
 		// if the max incarnation >= x, we should revert to synchronous
@@ -307,7 +306,7 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 		}
 
 		if startIdx > lastStoreIdx {
-			s.multiVersionStores.WriteLatestToStoreUntil(startIdx, s.state)
+			s.multiVersionStores.WriteLatestToStoreUntil(lastStoreIdx, startIdx, s.state)
 			lastStoreIdx = startIdx
 		}
 
@@ -317,7 +316,7 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 		}
 
 		// validate returns any that should be re-executed
-		// note this processes ALL tasks, not just those recently executed
+		// note this processes ALL tasks, not just those recently executed 
 		var err error
 		toExecute, err = s.validateAll(tasks)
 		if err != nil {
@@ -332,8 +331,10 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 }
 
 func (s *scheduler) processAllSync(tasks []*DeliverTxTask) {
+	lastStoreIdx := 0
 	for _, task := range tasks {
-		s.multiVersionStores.WriteLatestToStoreUntil(task.AbsoluteIndex, s.state)
+		s.multiVersionStores.WriteLatestToStoreUntil(lastStoreIdx, task.AbsoluteIndex, s.state)
+		lastStoreIdx = task.AbsoluteIndex
 		s.executeTask(task)
 	}
 }

@@ -105,7 +105,7 @@ func (a *AccessListTracer) CaptureStart(env *vm.EVM, from common.Address, to com
 	}
 
 	// Nonce related logic
-	isContractSender := env.StateDB.IsProgramAccount(sender)
+	isContractSender := env.StateDB.GetCodeSize(sender) > 0
 	if isContractSender {
 		if create {
 			a.updateAndSetNonce(sender)
@@ -226,7 +226,6 @@ func (a *AccessListTracer) Set(key StorageKey, value common.Hash) {
 	// store.mtx.Lock()
 	// defer store.mtx.Unlock()
 	// defer telemetry.MeasureSince(time.Now(), "store", "mvkv", "set")
-
 	if key.Bytes() == nil {
 		return
 	}
@@ -339,7 +338,7 @@ func (a *AccessListTracer) Get(key StorageKey) common.Hash {
 		if mvsValue.IsEstimate() {
 			abort := NewEstimateAbort(mvsValue.Index())
 			a.WriteAbort(abort)
-			panic(abort)
+			// panic(abort)
 		} else {
 			// This handles both detecting readset conflicts and updating readset if applicable
 			return a.parseValueAndUpdateReadset(key, mvsValue)

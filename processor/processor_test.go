@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -54,7 +55,7 @@ func (caller *ContractCallerForTest) CallContract(ctx context.Context, call kaia
 	// No need to handle access list here
 
 	msg := types.NewMessage(call.From, call.To, caller.state.GetNonce(call.From),
-		call.Value, gasLimit, gasPrice, call.Data, false, intrinsicGas, nil)
+		call.Value, gasLimit, gasPrice, nil, nil, call.Data, false, intrinsicGas, nil, nil)
 
 	blockContext := blockchain.NewEVMBlockContext(caller.header, caller.chain, nil)
 	txContext := blockchain.NewEVMTxContext(msg, caller.header, caller.chain.Config())
@@ -138,17 +139,20 @@ func prepareContractTx(bc *blockchain.BlockChain, num int, len int) ([]*types.Tr
 	return txs, senderAddrs, nil
 }
 
-func executeTxsSequential(txs []*types.Transaction, bc *blockchain.BlockChain, state *state.StateDB) (common.Hash, error) {
+func executeTxsSequential(txs []*types.Transaction, bc *blockchain.BlockChain, state *state.StateDB) (common.Hash, []*types.Receipt, error) {
 	executor := chain.NewExecutor(bc.Config(), state, types.CopyHeader(bc.CurrentHeader()))
+	author, _ := bc.Engine().Author(bc.CurrentHeader())
+	receipts := make([]*types.Receipt, len(txs))
 	for i, tx := range txs {
 		state.SetTxContext(tx.Hash(), common.Hash{}, i)
 		tracer := multiversion.NewAccessListTracer(multiversion.NewMultiVersionStore(state), tx, i, 0, nil)
-		err, _ := executor.CommitTransaction(tx, bc, constants.DefaultRewardBase, &vm.Config{Debug: true, Tracer: tracer})
+		err, resp := executor.CommitTransaction(tx, bc, author, &vm.Config{Debug: true, Tracer: tracer})
 		if err != nil {
-			return common.Hash{}, err
+			return common.Hash{}, nil, err
 		}
+		receipts[i] = resp
 	}
-	return state.IntermediateRoot(false), nil
+	return state.IntermediateRoot(false), receipts, nil
 }
 
 func TestValueTransferSingleTx(t *testing.T) {
@@ -169,7 +173,7 @@ func TestValueTransferSingleTx(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +205,7 @@ func TestDependentValueTransferMultipleTxs(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +241,7 @@ func TestValueTransferMultipleTxsConcurrent(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +284,7 @@ func TestExecutionContractTx(t *testing.T) {
 	}
 	resp := processor.Execute()
 
-	rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,15 +304,15 @@ func TestExecutionContractTx(t *testing.T) {
 	}
 }
 
-// TODO: This test fails randomly
 func TestExecutionContractTxs(t *testing.T) {
 	bc := prepareChain()
-	header := bc.CurrentHeader()
 
 	state, _ := bc.State()
 	caller, _ := prepareTestContract(bc, state)
 
-	txs, senders, err := prepareContractTx(bc, 10, 10)
+	loop := 2
+	txsNum := 8
+	txs, senders, err := prepareContractTx(bc, txsNum, loop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,33 +320,44 @@ func TestExecutionContractTxs(t *testing.T) {
 	for _, sender := range senders {
 		state.SetBalance(sender, big.NewInt(1000000000000000000))
 	}
-	// stateCopy := state.Copy()
+	stateCopy := state.Copy()
+	callerCopy, _ := prepareTestContract(bc, stateCopy)
 	
-	processor, err := NewProcessor(txs, bc, header, state, 0)
+	processor, err := NewProcessor(txs, bc, bc.CurrentHeader(), state, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp := processor.Execute()
+	root := state.IntermediateRoot(false)
 	
-	// rootSequential, err := executeTxsSequential(txs, bc, stateCopy)
-	// if err != nil {
-	// 	t.Fatal(err)
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// for i, sender := range senders {
+	// 	fmt.Println(i, sender, state.GetBalance(sender))
+	// 	fmt.Println(i, sender, stateCopy.GetBalance(sender))
 	// }
 
-	// root := state.IntermediateRoot(false)
+	assert.Equal(t, root, rootSequential)
 
-	// assert.Equal(t, root, rootSequential)
-
-	assert.Equal(t, len(resp), 10)
+	assert.Equal(t, len(resp), txsNum)
 	for _, r := range resp {
 		assert.Equal(t, r.Receipt.Status, uint(1))
 	}
-	for i := 0; i < 10; i++ {
+	for i := 0; i < loop; i++ {
 		arr, err := caller.Arr(nil, big.NewInt(int64(i)))
+		arrCopy, err2 := callerCopy.Arr(nil, big.NewInt(int64(i)))
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err2 != nil {
+			fmt.Println(err2)
+			t.Fatal(err2)
+		}
 		assert.Equal(t, arr.Uint64(), uint64(i))
+		assert.Equal(t, arrCopy.Uint64(), uint64(i))
 	}
 }
 

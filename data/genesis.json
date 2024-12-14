@@ -14,6 +14,7 @@
     "kip160CompatibleBlock": 0,
     "kip160ContractAddress": "0x0000000000000000000000000000000000000000",
     "randaoCompatibleBlock": 0,
+    "pragueCompatibleBlock": 0,
     "randaoRegistry": {
       "records": {
         "KIP113": "0x0000000000000000000000000000000000000402"

@@ -15,7 +15,7 @@ type MultiVersionStore interface {
 	GetParentState() *state.StateDB
 	Has(index int, key StorageKey) bool
 	WriteLatestToStore(state *state.StateDB)
-	WriteLatestToStoreUntil(index int, state *state.StateDB)
+	WriteLatestToStoreUntil(lastStoreIndex int, startIndex int, state *state.StateDB)
 	SetWriteset(index int, incarnation int, writeset WriteSet)
 	InvalidateWriteset(index int, incarnation int)
 	SetEstimatedWriteset(index int, incarnation int, writeset WriteSet)
@@ -248,9 +248,11 @@ func (s *Store) checkReadsetAtIndex(index int) (bool, []int) {
 			}
 			continue
 		} else {
-			// if estimate, mark as conflict index - but don't invalidate
+			// if estimate, mark as conflict index
+			// TODO-kaia: Re-evaluate if we should be invalidating here
 			if latestValue.IsEstimate() {
 				conflictSet[latestValue.Index()] = struct{}{}
+				valid = false
 			} else if latestValue.IsDeleted() {
 				if value != (common.Hash{}) {
 					// conflict
@@ -284,7 +286,7 @@ func (s *Store) ValidateTransactionState(index int) (bool, []int) {
 	return readsetValid, conflictIndices
 }
 
-func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
+func (s *Store) WriteLatestToStoreUntil(lastStoreIndex int, startIndex int, finalState *state.StateDB) {
 	// sort the keys
 	keys := []StorageKey{}
 	s.multiVersionMap.Range(func(key, value interface{}) bool {
@@ -294,7 +296,6 @@ func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
 	sort.Slice(keys, func(i, j int) bool {
 		return keys[i].String() < keys[j].String()
 	})
-
 	for _, key := range keys {
 		val, ok := s.multiVersionMap.Load(key)
 		if !ok {
@@ -309,9 +310,10 @@ func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
 		if mvValue.IsEstimate() {
 			panic("should not have any estimate values when writing to parent store")
 		}
-		if mvValue.Index() >= index {
-			continue
-		}
+		// valIdx := mvValue.Index()
+		// if valIdx < lastStoreIndex || valIdx >= startIndex {
+		// 	continue
+		// }
 		// if the value is deleted, then delete it from the parent store
 		if mvValue.IsDeleted() {
 			// We use []byte(key) instead of conv.UnsafeStrToBytes because we cannot
@@ -325,6 +327,8 @@ func (s *Store) WriteLatestToStoreUntil(index int, finalState *state.StateDB) {
 			key.SetValue(finalState, mvValue.Value())
 		}
 	}
+	
+	finalState.Finalise(true, false)
 }
 
 func (s *Store) WriteLatestToStore(finalState *state.StateDB) {
@@ -365,4 +369,6 @@ func (s *Store) WriteLatestToStore(finalState *state.StateDB) {
 			key.SetValue(finalState, mvValue.Value())
 		}
 	}
+
+	finalState.Finalise(true, false)
 }
