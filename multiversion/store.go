@@ -310,10 +310,10 @@ func (s *Store) WriteLatestToStoreUntil(lastStoreIndex int, startIndex int, fina
 		if mvValue.IsEstimate() {
 			panic("should not have any estimate values when writing to parent store")
 		}
-		// valIdx := mvValue.Index()
-		// if valIdx < lastStoreIndex || valIdx >= startIndex {
-		// 	continue
-		// }
+		valIdx := mvValue.Index()
+		if valIdx < lastStoreIndex || valIdx >= startIndex {
+			continue
+		}
 		// if the value is deleted, then delete it from the parent store
 		if mvValue.IsDeleted() {
 			// We use []byte(key) instead of conv.UnsafeStrToBytes because we cannot

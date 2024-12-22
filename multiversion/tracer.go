@@ -338,10 +338,11 @@ func (a *AccessListTracer) Get(key StorageKey) common.Hash {
 		if mvsValue.IsEstimate() {
 			abort := NewEstimateAbort(mvsValue.Index())
 			a.WriteAbort(abort)
-			// panic(abort)
+			panic(abort)
 		} else {
 			// This handles both detecting readset conflicts and updating readset if applicable
-			return a.parseValueAndUpdateReadset(key, mvsValue)
+			// TODO-kaia: Re-evaluate if we should be updating readset using the MVStore
+			// return a.parseValueAndUpdateReadset(key, mvsValue)
 		}
 	}
 	parentValue := key.GetValue(a.multiVersionStore.GetParentState())

@@ -311,7 +311,7 @@ func TestExecutionContractTxs(t *testing.T) {
 	caller, _ := prepareTestContract(bc, state)
 
 	loop := 2
-	txsNum := 8
+	txsNum := 10
 	txs, senders, err := prepareContractTx(bc, txsNum, loop)
 	if err != nil {
 		t.Fatal(err)
@@ -334,11 +334,6 @@ func TestExecutionContractTxs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// for i, sender := range senders {
-	// 	fmt.Println(i, sender, state.GetBalance(sender))
-	// 	fmt.Println(i, sender, stateCopy.GetBalance(sender))
-	// }
 
 	assert.Equal(t, root, rootSequential)
 
