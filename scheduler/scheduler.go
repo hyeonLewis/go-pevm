@@ -39,7 +39,6 @@ func (s status) String() string {
 	return []string{"pending", "executed", "aborted", "validated", "waiting"}[s]
 }
 
-
 const (
 	// maximumIterations before we revert to sequential (for high conflict rates)
 	maximumIterations = 10
@@ -123,8 +122,8 @@ type scheduler struct {
 	allTasks           []*DeliverTxTask
 	executeCh          chan func()
 	validateCh         chan func()
-	synchronous        bool // true if maxIncarnation exceeds threshold
-	maxIncarnation     atomic.Int32  // current highest incarnation
+	synchronous        bool         // true if maxIncarnation exceeds threshold
+	maxIncarnation     atomic.Int32 // current highest incarnation
 
 	state       *state.StateDB
 	chainConfig *params.ChainConfig
@@ -288,7 +287,7 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 	start(workerCtx, s.validateCh, len(tasks))
 
 	toExecute := tasks
-	
+
 	lastStoreIdx := 0
 	for !allValidated(tasks) {
 		// if the max incarnation >= x, we should revert to synchronous
@@ -316,7 +315,7 @@ func (s *scheduler) ProcessAll(reqs []*DeliverTxEntry) ([]*Response, error) {
 		}
 
 		// validate returns any that should be re-executed
-		// note this processes ALL tasks, not just those recently executed 
+		// note this processes ALL tasks, not just those recently executed
 		var err error
 		toExecute, err = s.validateAll(tasks)
 		if err != nil {
@@ -420,14 +419,14 @@ func (s *scheduler) validateAll(tasks []*DeliverTxTask) ([]*DeliverTxTask, error
 		})
 	}
 	go func() {
-        wg.Wait()
-        close(resChan)
-    }()
+		wg.Wait()
+		close(resChan)
+	}()
 
-    var res []*DeliverTxTask
-    for t := range resChan {
-        res = append(res, t)
-    }
+	var res []*DeliverTxTask
+	for t := range resChan {
+		res = append(res, t)
+	}
 
 	return res, nil
 }

@@ -25,12 +25,14 @@ import (
 
 const (
 	defaultWorkers = 20
-	numTxs         = 50
+	numTxs         = 500
+	numContractTxs = 100
+	benchmarkLoop  = 10
 )
 
 var (
 	contractAddress = common.HexToAddress("0x0000000000000000000000000000000000000500")
-	testByteCode = hexutil.MustDecode("0x" + test.TestBinRuntime)
+	testByteCode    = hexutil.MustDecode("0x" + test.TestBinRuntime)
 )
 
 type ContractCallerForTest struct {
@@ -77,8 +79,8 @@ func prepareChain() *blockchain.BlockChain {
 
 func prepareTestContract(bc *blockchain.BlockChain, state *state.StateDB) (*test.TestCaller, error) {
 	caller := &ContractCallerForTest{
-		state: state,
-		chain: bc,
+		state:  state,
+		chain:  bc,
 		header: bc.CurrentHeader(),
 	}
 
@@ -129,7 +131,26 @@ func prepareContractTx(bc *blockchain.BlockChain, num int, len int) ([]*types.Tr
 	for i := 0; i < num; i++ {
 		senderPrivKey, _ := crypto.GenerateKey()
 		senderAddrs[i] = crypto.PubkeyToAddress(senderPrivKey.PublicKey)
-		tx := types.NewTransaction(0, contractAddress, big.NewInt(0), 3000000, big.NewInt(25*1e9), input) 
+		tx := types.NewTransaction(0, contractAddress, big.NewInt(0), 3000000, big.NewInt(25*1e9), input)
+		err := tx.Sign(types.NewEIP155Signer(config.ChainID), senderPrivKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		txs[i] = tx
+	}
+	return txs, senderAddrs, nil
+}
+
+func prepareIndependentContractTx(bc *blockchain.BlockChain, num int) ([]*types.Transaction, []common.Address, error) {
+	config := bc.Config()
+	txs := make([]*types.Transaction, num)
+	senderAddrs := make([]common.Address, num)
+	abi, _ := test.TestMetaData.GetAbi()
+	for i := 0; i < num; i++ {
+		input, _ := abi.Pack("setMap", big.NewInt(int64(i)))
+		senderPrivKey, _ := crypto.GenerateKey()
+		senderAddrs[i] = crypto.PubkeyToAddress(senderPrivKey.PublicKey)
+		tx := types.NewTransaction(0, contractAddress, big.NewInt(0), 30_000_000, big.NewInt(25*1e9), input)
 		err := tx.Sign(types.NewEIP155Signer(config.ChainID), senderPrivKey)
 		if err != nil {
 			return nil, nil, err
@@ -277,7 +298,7 @@ func TestExecutionContractTx(t *testing.T) {
 		state.SetBalance(sender, big.NewInt(1000000000000000000))
 	}
 	stateCopy := state.Copy()
-	
+
 	processor, err := NewProcessor(txs, bc, header, state, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -310,8 +331,8 @@ func TestExecutionContractTxs(t *testing.T) {
 	state, _ := bc.State()
 	caller, _ := prepareTestContract(bc, state)
 
-	loop := 2
-	txsNum := 10
+	loop := 10
+	txsNum := 100
 	txs, senders, err := prepareContractTx(bc, txsNum, loop)
 	if err != nil {
 		t.Fatal(err)
@@ -322,14 +343,14 @@ func TestExecutionContractTxs(t *testing.T) {
 	}
 	stateCopy := state.Copy()
 	callerCopy, _ := prepareTestContract(bc, stateCopy)
-	
+
 	processor, err := NewProcessor(txs, bc, bc.CurrentHeader(), state, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp := processor.Execute()
 	root := state.IntermediateRoot(false)
-	
+
 	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
 	if err != nil {
 		t.Fatal(err)
@@ -351,36 +372,94 @@ func TestExecutionContractTxs(t *testing.T) {
 			fmt.Println(err2)
 			t.Fatal(err2)
 		}
-		assert.Equal(t, arr.Uint64(), uint64(i))
-		assert.Equal(t, arrCopy.Uint64(), uint64(i))
+		assert.Equal(t, uint64(i), arr.Uint64())
+		assert.Equal(t, uint64(i), arrCopy.Uint64())
+	}
+}
+
+func TestExecutionIndependentContractTxs(t *testing.T) {
+	bc := prepareChain()
+
+	state, _ := bc.State()
+	caller, _ := prepareTestContract(bc, state)
+
+	txsNum := 100
+	txs, senders, err := prepareIndependentContractTx(bc, txsNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sender := range senders {
+		state.SetBalance(sender, big.NewInt(1000000000000000000))
+	}
+	stateCopy := state.Copy()
+	callerCopy, _ := prepareTestContract(bc, stateCopy)
+
+	processor, err := NewProcessor(txs, bc, bc.CurrentHeader(), state, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := processor.Execute()
+	root := state.IntermediateRoot(false)
+
+	rootSequential, _, err := executeTxsSequential(txs, bc, stateCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.Equal(t, root, rootSequential)
+
+	assert.Equal(t, len(resp), txsNum)
+	for _, r := range resp {
+		assert.Equal(t, r.Receipt.Status, uint(1))
+	}
+	for i := 0; i < txsNum; i++ {
+		arr, err := caller.Map(nil, senders[i])
+		arrCopy, err2 := callerCopy.Map(nil, senders[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err2 != nil {
+			fmt.Println(err2)
+			t.Fatal(err2)
+		}
+		assert.Equal(t, uint64(i*500), arr.Uint64())
+		assert.Equal(t, uint64(i*500), arrCopy.Uint64())
 	}
 }
 
 // Benchmark
-
-// Before avoiding validation:
-// 1000000000	         0.01709 ns/op	       0 B/op	       0 allocs/op
-// After avoiding validation:
-// 1000000000	         0.007191 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkDependentValueTransferTxsConcurrent(b *testing.B) {
 	benchmarkDependentValueTransferTxsConcurrent(b, defaultWorkers)
 }
 
-// 1000000000	         0.006375 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkDependentValueTransferTxsSequential(b *testing.B) {
 	benchmarkDependentValueTransferTxsSequential(b)
 }
 
-// 1000000000	         0.008027 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkValueTransferMultipleTxsConcurrent(b *testing.B) {
 	benchmarkValueTransferMultipleTxsConcurrent(b, defaultWorkers)
 }
 
-// 1000000000	         0.01039 ns/op	       0 B/op	       0 allocs/op
 func BenchmarkValueTransferMultipleTxsSequential(b *testing.B) {
 	benchmarkValueTransferMultipleTxsSequential(b)
 }
 
+func BenchmarkDependentSmartContractConcurrent(b *testing.B) {
+	benchmarkSmartContractConcurrent(b, defaultWorkers)
+}
+
+func BenchmarkDependentSmartContractSequential(b *testing.B) {
+	benchmarkSmartContractSequential(b)
+}
+
+func BenchmarkIndependentSmartContractConcurrent(b *testing.B) {
+	benchmarkIndependentSmartContractConcurrent(b, defaultWorkers)
+}
+
+func BenchmarkIndependentSmartContractSequential(b *testing.B) {
+	benchmarkIndependentSmartContractSequential(b)
+}
 
 func benchmarkDependentValueTransferTxsConcurrent(b *testing.B, workers int) {
 	bc := prepareChain()
@@ -390,7 +469,7 @@ func benchmarkDependentValueTransferTxsConcurrent(b *testing.B, workers int) {
 	// This is to warm up the cache
 	state.Exist(constants.ValidatorAddress)
 	value := big.NewInt(10000)
-	txs, _ := prepareSimpleValueTransferTx(bc, value, 50)
+	txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
 
 	if workers > len(txs) {
 		workers = len(txs)
@@ -405,7 +484,7 @@ func benchmarkDependentValueTransferTxsSequential(b *testing.B) {
 	bc := prepareChain()
 	state, _ := bc.State()
 	value := big.NewInt(10000)
-	txs, _ := prepareSimpleValueTransferTx(bc, value, 50)
+	txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
 
 	executeTxsSequential(txs, bc, state)
 }
@@ -435,6 +514,66 @@ func benchmarkValueTransferMultipleTxsSequential(b *testing.B) {
 	value := big.NewInt(10000)
 	txs, senders, _, _ := prepareValueTransferTxWithSender(bc, value, numTxs)
 	state, _ := bc.State()
+	for _, sender := range senders {
+		state.SetBalance(sender, big.NewInt(1000000000000000000))
+	}
+
+	executeTxsSequential(txs, bc, state)
+}
+
+func benchmarkSmartContractConcurrent(b *testing.B, workers int) {
+	bc := prepareChain()
+
+	state, _ := bc.State()
+
+	txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
+
+	for _, sender := range senders {
+		state.SetBalance(sender, big.NewInt(1000000000000000000))
+	}
+
+	processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
+	processor.Execute()
+	state.IntermediateRoot(false)
+}
+
+func benchmarkSmartContractSequential(b *testing.B) {
+	bc := prepareChain()
+
+	state, _ := bc.State()
+
+	txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
+
+	for _, sender := range senders {
+		state.SetBalance(sender, big.NewInt(1000000000000000000))
+	}
+
+	executeTxsSequential(txs, bc, state)
+}
+
+func benchmarkIndependentSmartContractConcurrent(b *testing.B, workers int) {
+	bc := prepareChain()
+
+	state, _ := bc.State()
+
+	txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
+
+	for _, sender := range senders {
+		state.SetBalance(sender, big.NewInt(1000000000000000000))
+	}
+
+	processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
+	processor.Execute()
+	state.IntermediateRoot(false)
+}
+
+func benchmarkIndependentSmartContractSequential(b *testing.B) {
+	bc := prepareChain()
+
+	state, _ := bc.State()
+
+	txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
+
 	for _, sender := range senders {
 		state.SetBalance(sender, big.NewInt(1000000000000000000))
 	}

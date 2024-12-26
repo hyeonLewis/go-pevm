@@ -327,7 +327,7 @@ func (s *Store) WriteLatestToStoreUntil(lastStoreIndex int, startIndex int, fina
 			key.SetValue(finalState, mvValue.Value())
 		}
 	}
-	
+
 	finalState.Finalise(true, false)
 }
 

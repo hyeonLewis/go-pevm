@@ -132,7 +132,7 @@ func (item *multiVersionItem) Remove(index int) {
 
 func (item *multiVersionItem) SetEstimate(index int, incarnation int) {
 	estimateItem := NewEstimateItem(index, incarnation)
-	
+
 	item.mtx.Lock()
 	defer item.mtx.Unlock()
 	item.valueTree.ReplaceOrInsert(estimateItem)

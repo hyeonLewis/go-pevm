@@ -6,6 +6,8 @@ contract Test {
     address[] public addrArr;
     bytes[] public bytesArr;
 
+    mapping(address => uint256) public map;
+
     function setArr(uint256 len) public {
         for (uint256 i = 0; i < len; i++) {
             arr.push(i);
@@ -28,5 +30,11 @@ contract Test {
         setArr(len);
         setAddrArr(len);
         setBytesArr(len);
+    }
+
+    function setMap(uint256 idx) public {
+        for (uint256 i = 0; i < 500; i++) {
+            map[msg.sender] += idx;
+        }
     }
 }
