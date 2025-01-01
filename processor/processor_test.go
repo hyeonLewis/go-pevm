@@ -462,121 +462,137 @@ func BenchmarkIndependentSmartContractSequential(b *testing.B) {
 }
 
 func benchmarkDependentValueTransferTxsConcurrent(b *testing.B, workers int) {
-	bc := prepareChain()
-	header := bc.CurrentHeader()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
+		header := bc.CurrentHeader()
 
-	state, _ := bc.State()
-	// This is to warm up the cache
-	state.Exist(constants.ValidatorAddress)
-	value := big.NewInt(10000)
-	txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
+		state, _ := bc.State()
+		// This is to warm up the cache
+		state.Exist(constants.ValidatorAddress)
+		value := big.NewInt(10000)
+		txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
 
-	if workers > len(txs) {
-		workers = len(txs)
+		if workers > len(txs) {
+			workers = len(txs)
+		}
+		processor, _ := NewProcessor(txs, bc, header, state, workers)
+
+		processor.Execute()
+		state.IntermediateRoot(false)
 	}
-	processor, _ := NewProcessor(txs, bc, header, state, workers)
-
-	processor.Execute()
-	state.IntermediateRoot(false)
 }
 
 func benchmarkDependentValueTransferTxsSequential(b *testing.B) {
-	bc := prepareChain()
-	state, _ := bc.State()
-	value := big.NewInt(10000)
-	txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
+		state, _ := bc.State()
+		value := big.NewInt(10000)
+		txs, _ := prepareSimpleValueTransferTx(bc, value, numTxs)
 
-	executeTxsSequential(txs, bc, state)
+		executeTxsSequential(txs, bc, state)
+	}
 }
 
 func benchmarkValueTransferMultipleTxsConcurrent(b *testing.B, workers int) {
-	bc := prepareChain()
-	header := bc.CurrentHeader()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
+		header := bc.CurrentHeader()
 
-	value := big.NewInt(10000)
-	txs, senders, _, _ := prepareValueTransferTxWithSender(bc, value, numTxs)
-	state, _ := bc.State()
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
-	}
+		value := big.NewInt(10000)
+		txs, senders, _, _ := prepareValueTransferTxWithSender(bc, value, numTxs)
+		state, _ := bc.State()
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
 
-	if workers > numTxs {
-		workers = numTxs
+		if workers > numTxs {
+			workers = numTxs
+		}
+		processor, _ := NewProcessor(txs, bc, header, state, workers)
+		processor.Execute()
+		state.IntermediateRoot(false)
 	}
-	processor, _ := NewProcessor(txs, bc, header, state, workers)
-	processor.Execute()
-	state.IntermediateRoot(false)
 }
 
 func benchmarkValueTransferMultipleTxsSequential(b *testing.B) {
-	bc := prepareChain()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
 
-	value := big.NewInt(10000)
-	txs, senders, _, _ := prepareValueTransferTxWithSender(bc, value, numTxs)
-	state, _ := bc.State()
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
+		value := big.NewInt(10000)
+		txs, senders, _, _ := prepareValueTransferTxWithSender(bc, value, numTxs)
+		state, _ := bc.State()
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		executeTxsSequential(txs, bc, state)
 	}
-
-	executeTxsSequential(txs, bc, state)
 }
 
 func benchmarkSmartContractConcurrent(b *testing.B, workers int) {
-	bc := prepareChain()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
 
-	state, _ := bc.State()
+		state, _ := bc.State()
 
-	txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
+		txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
 
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
+		processor.Execute()
+		state.IntermediateRoot(false)
 	}
-
-	processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
-	processor.Execute()
-	state.IntermediateRoot(false)
 }
 
 func benchmarkSmartContractSequential(b *testing.B) {
-	bc := prepareChain()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
 
-	state, _ := bc.State()
+		state, _ := bc.State()
 
-	txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
+		txs, senders, _ := prepareContractTx(bc, numContractTxs, benchmarkLoop)
 
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		executeTxsSequential(txs, bc, state)
 	}
-
-	executeTxsSequential(txs, bc, state)
 }
 
 func benchmarkIndependentSmartContractConcurrent(b *testing.B, workers int) {
-	bc := prepareChain()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
 
-	state, _ := bc.State()
+		state, _ := bc.State()
 
-	txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
+		txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
 
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
+		processor.Execute()
+		state.IntermediateRoot(false)
 	}
-
-	processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
-	processor.Execute()
-	state.IntermediateRoot(false)
 }
 
 func benchmarkIndependentSmartContractSequential(b *testing.B) {
-	bc := prepareChain()
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
 
-	state, _ := bc.State()
+		state, _ := bc.State()
 
-	txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
+		txs, senders, _ := prepareIndependentContractTx(bc, numTxs)
 
-	for _, sender := range senders {
-		state.SetBalance(sender, big.NewInt(1000000000000000000))
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		executeTxsSequential(txs, bc, state)
 	}
-
-	executeTxsSequential(txs, bc, state)
 }
