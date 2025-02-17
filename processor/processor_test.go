@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/hyeonLewis/go-pevm/chain"
 	"github.com/hyeonLewis/go-pevm/constants"
@@ -461,6 +463,14 @@ func BenchmarkIndependentSmartContractSequential(b *testing.B) {
 	benchmarkIndependentSmartContractSequential(b)
 }
 
+func BenchmarkIndependentAndDependentSmartContractConcurrent(b *testing.B) {
+	benchmarkIndependentAndDependentSmartContractConcurrent(b, defaultWorkers)
+}
+
+func BenchmarkIndependentAndDependentSmartContractSequential(b *testing.B) {
+	benchmarkIndependentAndDependentSmartContractSequential(b)
+}
+
 func benchmarkDependentValueTransferTxsConcurrent(b *testing.B, workers int) {
 	for i := 0; i < b.N; i++ {
 		bc := prepareChain()
@@ -592,6 +602,76 @@ func benchmarkIndependentSmartContractSequential(b *testing.B) {
 		for _, sender := range senders {
 			state.SetBalance(sender, big.NewInt(1000000000000000000))
 		}
+
+		executeTxsSequential(txs, bc, state)
+	}
+}
+
+func benchmarkIndependentAndDependentSmartContractConcurrent(b *testing.B, workers int) {
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
+		state, _ := bc.State()
+
+		independentTxCount := 30
+		independentTxs, senders, _ := prepareIndependentContractTx(bc, independentTxCount)
+
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		dependentTxCount := 70
+		dependentTxs, senders, _ := prepareContractTx(bc, dependentTxCount, benchmarkLoop)
+
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		txs := append(dependentTxs, independentTxs...)
+		shuffle := func(txs []*types.Transaction) {
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			n := len(txs)
+			for i := n - 1; i > 0; i-- {
+				j := r.Intn(i + 1)
+				txs[i], txs[j] = txs[j], txs[i]
+			}
+		}
+		shuffle(txs)
+
+		processor, _ := NewProcessor(txs, bc, bc.CurrentHeader(), state, workers)
+		processor.Execute()
+		state.IntermediateRoot(false)
+	}
+}
+
+func benchmarkIndependentAndDependentSmartContractSequential(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		bc := prepareChain()
+		state, _ := bc.State()
+
+		independentTxCount := 30
+		independentTxs, senders, _ := prepareIndependentContractTx(bc, independentTxCount)
+
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		dependentTxCount := 70
+		dependentTxs, senders, _ := prepareContractTx(bc, dependentTxCount, benchmarkLoop)
+
+		for _, sender := range senders {
+			state.SetBalance(sender, big.NewInt(1000000000000000000))
+		}
+
+		txs := append(dependentTxs, independentTxs...)
+		shuffle := func(txs []*types.Transaction) {
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			n := len(txs)
+			for i := n - 1; i > 0; i-- {
+				j := r.Intn(i + 1)
+				txs[i], txs[j] = txs[j], txs[i]
+			}
+		}
+		shuffle(txs)
 
 		executeTxsSequential(txs, bc, state)
 	}
